@@ -1,0 +1,70 @@
+package eventbus
+
+import (
+	"context"
+	"testing"
+
+	"github.com/m1981/temporal-go-agent-sdk/pkg/logger"
+)
+
+func TestInmem_PublishSubscribe(t *testing.T) {
+	c := NewInmem(logger.NoopLogger())
+	ctx := context.Background()
+
+	data := []byte("hello")
+	if err := c.Publish(ctx, "ch1", data); err != nil {
+		t.Fatalf("Publish empty subs: %v", err)
+	}
+
+	ch, closeFn, err := c.Subscribe(ctx, "ch1")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer func() { _ = closeFn() }()
+
+	go func() {
+		if err := c.Publish(ctx, "ch1", []byte("msg1")); err != nil {
+			t.Errorf("Publish: %v", err)
+		}
+	}()
+
+	got := <-ch
+	if string(got) != "msg1" {
+		t.Errorf("got %q, want msg1", string(got))
+	}
+}
+
+func TestInmem_MultipleSubscribers(t *testing.T) {
+	c := NewInmem(logger.NoopLogger())
+	ctx := context.Background()
+
+	ch1, close1, _ := c.Subscribe(ctx, "ch")
+	defer func() { _ = close1() }()
+	ch2, close2, _ := c.Subscribe(ctx, "ch")
+	defer func() { _ = close2() }()
+
+	if err := c.Publish(ctx, "ch", []byte("broadcast")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	g1, g2 := <-ch1, <-ch2
+	if string(g1) != "broadcast" || string(g2) != "broadcast" {
+		t.Errorf("got %q, %q; want broadcast for both", string(g1), string(g2))
+	}
+}
+
+func TestInmem_CloseUnsubscribes(t *testing.T) {
+	c := NewInmem(logger.NoopLogger())
+	ctx := context.Background()
+
+	ch, closeFn, _ := c.Subscribe(ctx, "ch")
+	_ = closeFn()
+
+	if err := c.Publish(ctx, "ch", []byte("x")); err != nil {
+		t.Fatalf("Publish after close: %v", err)
+	}
+	_, ok := <-ch
+	if ok {
+		t.Error("channel should be closed")
+	}
+}

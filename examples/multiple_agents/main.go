@@ -1,0 +1,102 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+	"sync"
+
+	config "github.com/m1981/temporal-go-agent-sdk/examples"
+	"github.com/m1981/temporal-go-agent-sdk/examples/shared"
+	"github.com/m1981/temporal-go-agent-sdk/pkg/agent"
+)
+
+func main() {
+	cfg := config.LoadFromEnv()
+
+	llmClient, err := config.NewLLMClientFromConfig(cfg)
+	if err != nil {
+		log.Printf("failed to create LLM client: %v", err)
+		return
+	}
+
+	// TaskQueue must be unique per agent. Use WithInstanceId when running multiple agents in same process.
+	temporalOpts := config.RuntimeOption(cfg)
+
+	agent1Opts := []agent.Option{
+		agent.WithName("agent-1"),
+		agent.WithSystemPrompt("You are a helpful math assistant. Keep answers brief."),
+		agent.WithInstanceId("agent-1"),
+		agent.WithLLMClient(llmClient),
+		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
+	}
+	agent1Opts = append(agent1Opts, temporalOpts...)
+	agent1, err := agent.NewAgent(agent1Opts...)
+	if err != nil {
+		log.Fatal(config.FormatNewAgentError("failed to create agent 1", err))
+	}
+	defer agent1.Close()
+
+	agent2Opts := []agent.Option{
+		agent.WithName("agent-2"),
+		agent.WithSystemPrompt("You are a creative writing assistant. Be expressive."),
+		agent.WithInstanceId("agent-2"),
+		agent.WithLLMClient(llmClient),
+		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
+	}
+	agent2Opts = append(agent2Opts, temporalOpts...)
+	agent2, err := agent.NewAgent(agent2Opts...)
+	if err != nil {
+		log.Fatal(config.FormatNewAgentError("failed to create agent 2", err))
+	}
+	defer agent2.Close()
+
+	mode, prompt := parseArgs()
+	if prompt == "" {
+		prompt = "What is 7 times 8?"
+	}
+
+	runAgent := func(name string, a *agent.Agent, p string) {
+		fmt.Printf("\n--- %s ---\n", name)
+		result, err := a.Run(context.Background(), p, nil)
+		if err != nil {
+			fmt.Printf("%s error: %v\n", name, err)
+			return
+		}
+		fmt.Printf("%s: %s\n", name, result.Content)
+		shared.PrintRunFooters(result)
+	}
+
+	if mode == "concurrent" {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			runAgent("Agent 1 (math)", agent1, prompt)
+		}()
+		go func() {
+			defer wg.Done()
+			runAgent("Agent 2 (creative)", agent2, prompt)
+		}()
+		wg.Wait()
+	} else {
+		// sequential (default)
+		runAgent("Agent 1 (math)", agent1, prompt)
+		runAgent("Agent 2 (creative)", agent2, prompt)
+	}
+	fmt.Println("\nDone.")
+}
+
+// parseArgs returns (mode, prompt). First arg "sequential" or "concurrent" sets mode; else default sequential.
+func parseArgs() (mode, prompt string) {
+	mode = "sequential"
+	args := os.Args[1:]
+	if len(args) > 0 && (args[0] == "sequential" || args[0] == "concurrent") {
+		mode = args[0]
+		args = args[1:]
+	}
+	prompt = strings.Join(args, " ")
+	return mode, prompt
+}

@@ -1,0 +1,72 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	config "github.com/m1981/temporal-go-agent-sdk/examples"
+	"github.com/m1981/temporal-go-agent-sdk/examples/shared"
+	"github.com/m1981/temporal-go-agent-sdk/pkg/agent"
+	"github.com/m1981/temporal-go-agent-sdk/pkg/tools/calculator"
+	"github.com/m1981/temporal-go-agent-sdk/pkg/tools/echo"
+)
+
+func main() {
+	cfg := config.LoadFromEnv()
+
+	llmClient, err := config.NewLLMClientFromConfig(cfg)
+	if err != nil {
+		log.Fatalf("failed to create LLM client: %v", err)
+	}
+
+	reg := agent.NewToolRegistry()
+	if err := agent.RegisterTools(reg, echo.New()); err != nil {
+		log.Fatalf("register tools: %v", err)
+	}
+
+	opts := []agent.Option{
+		agent.WithName("dynamic-registry"),
+		agent.WithDescription("Agent whose tools can change between runs via ToolRegistry"),
+		agent.WithSystemPrompt("You are a helpful assistant. Use tools when they are available; do not guess numeric results when a calculator tool exists."),
+		agent.WithLLMClient(llmClient),
+		agent.WithToolRegistry(reg),
+		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
+		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
+	}
+	opts = append(opts, config.RuntimeOption(cfg)...)
+
+	a, err := agent.NewAgent(opts...)
+	if err != nil {
+		log.Fatal(config.FormatNewAgentError("failed to create agent", err))
+	}
+	defer a.Close()
+
+	ctx := context.Background()
+	mathPrompt := "What is 17 times 23? Use the calculator tool if you have it."
+
+	fmt.Println("--- run 1 (echo only) ---")
+	fmt.Println("user:", mathPrompt)
+	result, err := a.Run(ctx, mathPrompt, nil)
+	if err != nil {
+		log.Printf("run 1 failed: %v", err)
+	} else {
+		fmt.Println("agent:", result.Content)
+		shared.PrintRunFooters(result)
+	}
+
+	if err := a.ToolRegistry().Register(calculator.New()); err != nil {
+		log.Fatalf("register calculator: %v", err)
+	}
+	fmt.Println("\nregistered calculator on ToolRegistry()")
+
+	fmt.Println("\n--- run 2 (echo + calculator) ---")
+	fmt.Println("user:", mathPrompt)
+	result, err = a.Run(ctx, mathPrompt, nil)
+	if err != nil {
+		log.Printf("run 2 failed: %v", err)
+		return
+	}
+	fmt.Println("agent:", result.Content)
+	shared.PrintRunFooters(result)
+}

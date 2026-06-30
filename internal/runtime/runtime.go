@@ -1,0 +1,167 @@
+// Package runtime defines internal execution contracts for agent backends (Temporal, in-process, etc.).
+// SDK users do not import this package; pkg/agent wires implementations.
+// If a file also imports the standard library "runtime" package, alias one import (e.g. agentrt ".../internal/runtime").
+package runtime
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/m1981/temporal-go-agent-sdk/internal/eventbus"
+	"github.com/m1981/temporal-go-agent-sdk/internal/events"
+	"github.com/m1981/temporal-go-agent-sdk/internal/hooks"
+	"github.com/m1981/temporal-go-agent-sdk/internal/types"
+	"github.com/m1981/temporal-go-agent-sdk/pkg/interfaces"
+	"github.com/m1981/temporal-go-agent-sdk/pkg/memory"
+)
+
+//go:generate mockgen -destination=./mocks/mock_runtime.go -package=mocks github.com/m1981/temporal-go-agent-sdk/internal/runtime Runtime
+//go:generate mockgen -destination=./mocks/mock_worker_runtime.go -package=mocks github.com/m1981/temporal-go-agent-sdk/internal/runtime WorkerRuntime
+//go:generate mockgen -destination=./mocks/mock_event_bus_runtime.go -package=mocks github.com/m1981/temporal-go-agent-sdk/internal/runtime EventBusRuntime
+
+// ErrApprovalNotSupported is returned by Runtime.Approve when the runtime does not use token-based approval.
+var ErrApprovalNotSupported = errors.New("runtime: approval not supported")
+
+// Runtime executes agent runs against a backend.
+type Runtime interface {
+	// Execute runs one execution and returns the result. The agent package supplies approval via ExecuteRequest when needed.
+	// Use WithTimeout or a context with deadline to avoid blocking.
+	// When using conversation, pass the conversation ID on the request; agent and worker must use the same ID.
+	// Agent identity lives on the runtime [AgentSpec] configured at construction.
+	Execute(ctx context.Context, req *ExecuteRequest) (*types.AgentRunResult, error)
+
+	// ExecuteStream starts the run and returns a channel of AgentEvent. Streams RUN_* lifecycle,
+	// streaming assistant/tool/reasoning events, and CUSTOM approvals until RUN_FINISHED or RUN_ERROR ends the stream.
+	// Delegated workflows may emit their own RUN_FINISHED; semantics for "root" completion are defined in pkg/agent.
+	// After the terminal lifecycle event the channel may stay open briefly, then closes.
+	// For approvals (tool or delegation), receive CUSTOM (AgentEventTypeCustom) events and use the agent
+	// package approval path (e.g. OnApproval with the token from the custom payload).
+	// When using conversation, pass the conversation ID on the request.
+	ExecuteStream(ctx context.Context, req *ExecuteRequest) (<-chan events.AgentEvent, error)
+
+	// Approve completes a pending tool approval when the runtime uses out-of-band approval
+	// (e.g. Temporal CompleteActivity). Returns ErrApprovalNotSupported if not applicable.
+	Approve(ctx context.Context, approvalToken string, status types.ApprovalStatus) error
+
+	// Close closes the runtime and releases resources.
+	Close()
+}
+
+// WorkerRuntime is [Runtime] plus optional in-process task-queue polling (e.g. Temporal worker).
+// [AgentWorker] and embedded local workers type-assert [Runtime] to WorkerRuntime for Start/Stop;
+// backends that only act as clients implement [Runtime] but not this interface.
+type WorkerRuntime interface {
+	Runtime
+	// Start begins polling; it typically blocks until Stop is called or ctx is cancelled.
+	Start(ctx context.Context) error
+	// Stop stops polling and releases worker resources.
+	Stop()
+}
+
+// EventBusRuntime extends [Runtime] with in-process event bus access for sub-agent delegation and
+// streaming fan-in. SDK backends (e.g. Temporal) implement it; [pkg/agent] asserts to it when wiring
+// the agent tree. Custom [Runtime] implementations need only implement [Runtime] unless they participate
+// in that fan-in.
+type EventBusRuntime interface {
+	Runtime
+	SetEventBus(eventbus eventbus.EventBus)
+	GetEventBus() eventbus.EventBus
+}
+
+// SubAgentToolParamQuery is the tool/JSON parameter name for the query sent to a sub-agent.
+const SubAgentToolParamQuery = "query"
+
+// SubAgentSpec describes one sub-agent in the delegation tree passed from pkg/agent to a runtime.
+// The runtime builds its own internal routing structures from this tree; no runtime-specific fields
+// are present here. ToolName is the sanitised tool name derived from Name and used as the map key.
+type SubAgentSpec struct {
+	Name     string  // human-readable agent name
+	ToolName string  // tool name used to invoke this sub-agent (key in runtime route maps)
+	Runtime  Runtime // the sub-agent's runtime instance
+	Children []*SubAgentSpec
+	// Tools is the registry-resolved tool list for this sub-agent at request time.
+	Tools []interfaces.Tool `json:"-"`
+}
+
+// AgentSpec describes agent identity and structured-output preferences configured on the runtime.
+type AgentSpec struct {
+	// Name is a human-readable label (may include spaces). Runtimes may sanitize it when embedding in workflow IDs.
+	Name           string
+	Description    string
+	SystemPrompt   string
+	ResponseFormat *interfaces.ResponseFormat
+}
+
+// AgentConfig is static agent wiring on the runtime at construction: LLM client, tool approval policy, session, limits, retriever config, and hooks.
+type AgentConfig struct {
+	LLM                AgentLLM
+	ToolApprovalPolicy interfaces.AgentToolApprovalPolicy
+	Retrievers         AgentRetrievers
+	Session            AgentSession
+	Memory             AgentMemory
+	Limits             AgentLimits
+	Hooks              []hooks.HookGroup
+}
+
+// AgentMemory holds long-term memory configuration for recall and store.
+type AgentMemory struct {
+	Config *memory.Config
+}
+
+// AgentRetrievers holds the retriever instances and mode for prefetch and hybrid RAG.
+type AgentRetrievers struct {
+	// Retrievers is the list of retriever instances registered with the agent.
+	Retrievers []interfaces.Retriever
+	// Mode is the retriever mode (agentic, prefetch, hybrid).
+	Mode types.RetrieverMode
+}
+
+// LLMSampling is the runtime package name for per-run sampling options.
+// It aliases [types.LLMSampling] so callers share one shape today; a distinct runtime type may replace this alias if the public runtime API needs different fields later.
+type LLMSampling = types.LLMSampling
+
+// AgentLLM is the LLM client and sampling overrides for this run.
+type AgentLLM struct {
+	Client   interfaces.LLMClient
+	Sampling *LLMSampling
+}
+
+// AgentSession is conversation storage and how many messages to include in LLM context.
+type AgentSession struct {
+	Conversation                interfaces.Conversation
+	ConversationSize            int
+	ConversationSaveOnIteration bool
+}
+
+// AgentLimits caps iteration and wall-clock behavior for this run.
+type AgentLimits struct {
+	MaxIterations   int
+	Timeout         time.Duration
+	ApprovalTimeout time.Duration
+	// MaxTokens limits the cumulative token usage across all LLM calls.
+	// 0 means no limit. When exceeded, the agent stops and returns what it has.
+	MaxTokens int64
+	// MaxToolOutputTokens limits the size of tool output fed back to the LLM.
+	// 0 means no limit. When exceeded, tool output is truncated.
+	MaxToolOutputTokens int
+}
+
+// ExecuteRequest carries one execution request from Agent to Runtime.
+type ExecuteRequest struct {
+	UserPrompt string `json:"user_prompt"`
+	// RunOptions is the per-call options forwarded from pkg/agent (e.g. conversation session). May be nil.
+	// Runtimes must use [base.GetConversationID] to safely extract the conversation ID rather than
+	// accessing the nested fields directly, so the nil-check is centralised.
+	RunOptions       *types.AgentRunOptions `json:"run_options,omitempty"`
+	StreamingEnabled bool                   `json:"streaming_enabled"`
+	// EventTypes filters streamed events; empty means default (implementation-defined, often all types).
+	EventTypes       []events.AgentEventType `json:"event_types,omitempty"`
+	SubAgents        []*SubAgentSpec         `json:"sub_agents,omitempty"`
+	MaxSubAgentDepth int                     `json:"max_sub_agent_depth"`
+
+	// Tools is the registry-resolved tool list for this run.
+	Tools []interfaces.Tool `json:"-"`
+
+	ApprovalHandler types.ApprovalHandler `json:"approval_handler"`
+}

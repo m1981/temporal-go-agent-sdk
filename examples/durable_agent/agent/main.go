@@ -1,0 +1,206 @@
+// Interactive streaming REPL for the durable_agent example.
+//
+// Usage:
+//
+//	go run . [initial prompt]
+//
+// Starts an event-workflow-backed stream so you can observe each event as it
+// arrives and simulate failure scenarios (e.g. kill the worker or this process
+// mid-run and restart to watch the streamingUnavailable path).
+//
+// At the "you>" prompt type any message.  Approval requests pause the stream
+// and ask for y/n before continuing.  Type "exit" or "quit" to stop.
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"strings"
+
+	config "github.com/m1981/temporal-go-agent-sdk/examples"
+	"github.com/m1981/temporal-go-agent-sdk/examples/durable_agent/opts"
+	"github.com/m1981/temporal-go-agent-sdk/examples/shared"
+	"github.com/m1981/temporal-go-agent-sdk/pkg/agent"
+)
+
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.LoadFromEnv()
+
+	llmClient, err := config.NewLLMClientFromConfig(cfg)
+	if err != nil {
+		log.Fatalf("failed to create LLM client: %v", err)
+	}
+
+	baseOpts := opts.Common(cfg.Host, cfg.Port, cfg.Namespace, cfg.TaskQueue, llmClient, config.NewLoggerFromLogConfig(cfg))
+	agentOpts := append(baseOpts,
+		agent.DisableLocalWorker(),
+		agent.EnableRemoteWorkers(),
+		agent.WithStream(true),
+	)
+
+	a, err := agent.NewAgent(agentOpts...)
+	if err != nil {
+		log.Fatal(config.FormatNewAgentError("failed to create agent", err))
+	}
+	defer a.Close()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+
+	go func() {
+		<-sigChan
+		cancel()
+		fmt.Println("Shutting down durable_agent...")
+		a.Close()
+		os.Exit(0)
+	}()
+
+	fmt.Println("=== durable_agent interactive stream ===")
+	fmt.Println("Events arrive via the event workflow (UpdateWorkflow path).")
+	fmt.Println("Simulate scenarios: kill the worker or this process mid-run, then restart.")
+	fmt.Println("Type 'exit' or 'quit' or 'bye' to stop.")
+	fmt.Println()
+
+	scanner := bufio.NewScanner(os.Stdin)
+
+	initial := strings.Join(os.Args[1:], " ")
+	if initial != "" {
+		runStream(ctx, a, scanner, initial)
+	}
+
+	for {
+		fmt.Print("you> ")
+		if !scanner.Scan() {
+			break
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if line == "exit" || line == "quit" || line == "bye" {
+			fmt.Println("Goodbye!")
+			break
+		}
+
+		runStream(ctx, a, scanner, line)
+
+		if ctx.Err() != nil {
+			break
+		}
+	}
+}
+
+func runStream(ctx context.Context, a *agent.Agent, scanner *bufio.Scanner, prompt string) {
+	eventCh, err := a.Stream(ctx, prompt, nil)
+	if err != nil {
+		fmt.Printf("[error] failed to start stream: %v\n\n", err)
+		return
+	}
+
+	fmt.Println("--- stream start ---")
+	streamed := false
+
+	for ev := range eventCh {
+		if ev == nil {
+			continue
+		}
+
+		switch ev.Type() {
+		case agent.AgentEventTypeTextMessageContent, agent.AgentEventTypeReasoningMessageContent:
+			streamed = true
+			if t, ok := ev.(*agent.AgentTextMessageContentEvent); ok && t.Delta != "" {
+				fmt.Print(t.Delta)
+			} else if r, ok := ev.(*agent.AgentReasoningMessageContentEvent); ok && r.Delta != "" {
+				fmt.Print(r.Delta)
+			}
+
+		case agent.AgentEventTypeToolCallStart:
+			if t, ok := ev.(*agent.AgentToolCallStartEvent); ok {
+				fmt.Printf("\n[tool_call] %s  (id=%s)\n", t.ToolCallName, t.ToolCallID)
+			}
+
+		case agent.AgentEventTypeToolCallArgs:
+			if t, ok := ev.(*agent.AgentToolCallArgsEvent); ok && t.Delta != "" {
+				fmt.Printf("[tool_args] %s\n", t.Delta)
+			}
+
+		case agent.AgentEventTypeToolCallResult:
+			if t, ok := ev.(*agent.AgentToolCallResultEvent); ok {
+				fmt.Printf("[tool_result] %s: %s\n", t.ToolCallID, t.Content)
+			}
+
+		case agent.AgentEventTypeCustom:
+			if v, ok := shared.ToolApprovalValueFromEvent(ev); ok {
+				args, _ := json.Marshal(v.Args)
+				fmt.Printf("\n[approval] agent=%s kind=tool target=%s args=%s\n", v.AgentName, v.ToolName, string(args))
+				handleApprovalTokenPrompt(ctx, a, scanner, v.ApprovalToken)
+			} else if v, ok := shared.DelegationApprovalValueFromEvent(ev); ok {
+				args, _ := json.Marshal(v.Args)
+				fmt.Printf("\n[approval] agent=%s kind=delegation target=delegate:%s args=%s\n", v.AgentName, v.SubAgentName, string(args))
+				handleApprovalTokenPrompt(ctx, a, scanner, v.ApprovalToken)
+			}
+
+		case agent.AgentEventTypeRunError:
+			if re, ok := ev.(*agent.AgentRunErrorEvent); ok {
+				fmt.Printf("\n[error] %s\n", re.Message)
+			}
+
+		case agent.AgentEventTypeRunFinished:
+			if streamed {
+				fmt.Println()
+			}
+			res := shared.RunResultFromFinishedEvent(ev)
+			if res != nil && res.Content != "" && !streamed {
+				fmt.Printf("[complete] %s\n", res.Content)
+			} else {
+				fmt.Println("[complete]")
+			}
+			shared.PrintRunFooters(res)
+
+		default:
+			//fmt.Printf("[%s] %+v\n", ev.Type(), ev)
+			continue
+		}
+	}
+
+	fmt.Println("--- stream end ---")
+	fmt.Println()
+}
+
+func handleApprovalTokenPrompt(ctx context.Context, a *agent.Agent, scanner *bufio.Scanner, token string) {
+	for {
+		fmt.Print("approve? (y/n)> ")
+		if !scanner.Scan() {
+			fmt.Println("EOF, rejecting.")
+			_ = a.OnApproval(ctx, token, agent.ApprovalStatusRejected)
+			return
+		}
+		ans := strings.ToLower(strings.TrimSpace(scanner.Text()))
+		switch ans {
+		case "y", "yes":
+			if err := a.OnApproval(ctx, token, agent.ApprovalStatusApproved); err != nil {
+				fmt.Printf("[approval error] %v\n", err)
+			} else {
+				fmt.Println("[approved]")
+			}
+			return
+		case "n", "no":
+			if err := a.OnApproval(ctx, token, agent.ApprovalStatusRejected); err != nil {
+				fmt.Printf("[approval error] %v\n", err)
+			} else {
+				fmt.Println("[rejected]")
+			}
+			return
+		default:
+			fmt.Println("please enter y or n")
+		}
+	}
+}
