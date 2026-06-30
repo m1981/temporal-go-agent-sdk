@@ -47,6 +47,11 @@ func TruncateToolOutput(content string, maxTokens int) string {
 		maxChars = minTruncationLength
 	}
 
+	// Ensure we don't exceed content length
+	if maxChars >= len(content) {
+		return content
+	}
+
 	// Truncate and add marker
 	truncated := content[:maxChars]
 

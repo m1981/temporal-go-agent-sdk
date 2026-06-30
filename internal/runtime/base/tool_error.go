@@ -87,6 +87,7 @@ func isInfrastructureError(msg string) bool {
 		"dial tcp",
 		"i/o timeout",
 		"network unreachable",
+		"unreachable",
 		"no route to host",
 		"broken pipe",
 		"eof",
