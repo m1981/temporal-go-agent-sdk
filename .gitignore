@@ -30,3 +30,16 @@ Thumbs.db
 projects/assistant-email/client_secret_*.json
 projects/assistant-email/email-assistant
 projects/assistant-email/.env
+
+# Runtime state
+.data/
+*.sqlite
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
