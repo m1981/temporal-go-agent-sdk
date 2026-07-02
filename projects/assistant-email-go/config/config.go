@@ -76,6 +76,12 @@ type Settings struct {
 	TemporalNamespace string
 	TemporalTaskQueue string
 	DigestInterval    time.Duration
+
+	// Observability (ADR-008). An empty OTLPEndpoint disables all export.
+	OTLPEndpoint string
+	OTLPProtocol string // "grpc" or "http"
+	OTLPInsecure bool
+	Environment  string
 }
 
 // UseTemporal reports whether the agent should run on the Temporal runtime.
@@ -120,6 +126,10 @@ func Load() (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
+	otlpProtocol := strings.ToLower(envDefault("OTLP_PROTOCOL", "grpc"))
+	if otlpProtocol != "grpc" && otlpProtocol != "http" {
+		return nil, fmt.Errorf("OTLP_PROTOCOL must be 'grpc' or 'http', got %q", otlpProtocol)
+	}
 
 	return &Settings{
 		AnthropicAPIKey: apiKey,
@@ -141,6 +151,10 @@ func Load() (*Settings, error) {
 		TemporalNamespace: envDefault("TEMPORAL_NAMESPACE", "default"),
 		TemporalTaskQueue: envDefault("TEMPORAL_TASK_QUEUE", "email-assistant"),
 		DigestInterval:    digestInterval,
+		OTLPEndpoint:      strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
+		OTLPProtocol:      otlpProtocol,
+		OTLPInsecure:      boolEnv("OTLP_INSECURE"),
+		Environment:       envDefault("DEPLOY_ENV", "dev"),
 	}, nil
 }
 
@@ -161,6 +175,14 @@ func intEnv(name string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s must be an integer, got %q", name, raw)
 	}
 	return v, nil
+}
+
+func boolEnv(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 func durationEnv(name string, fallback time.Duration) (time.Duration, error) {

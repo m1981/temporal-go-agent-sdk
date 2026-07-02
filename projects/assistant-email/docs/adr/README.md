@@ -13,6 +13,7 @@ This directory contains Architecture Decision Records (ADRs) for the Email Assis
 | [ADR-005](ADR-005-scheduling-strategy.md) | Scheduling Strategy | Accepted (Phase 2 superseded by ADR-007) | 2026-07-02 |
 | [ADR-006](ADR-006-go-port-on-agent-sdk.md) | Implement the Production Assistant in Go on the Agent SDK | Accepted | 2026-07-02 |
 | [ADR-007](ADR-007-temporal-schedules.md) | Temporal Schedules for the Periodic Digest | Accepted | 2026-07-02 |
+| [ADR-008](ADR-008-observability.md) | OpenTelemetry Observability via the SDK | Accepted | 2026-07-02 |
 
 ## ADR Template
 

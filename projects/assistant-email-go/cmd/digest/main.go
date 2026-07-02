@@ -1,12 +1,10 @@
 // Command digest runs one email-assistant pass: the deterministic pipeline
 // (classify → memory diff → render) alongside the SDK agent's LLM narrative.
+// It reuses the same digestwf activities the Temporal worker runs, so
+// one-shot and scheduled modes share one code path — including metrics
+// (ADR-008) when OTEL_EXPORTER_OTLP_ENDPOINT is set.
 //
 // Exit codes: 0 ok / quiet hours, 1 unexpected, 2 config, 3 gmail, 4 LLM or agent.
-//
-// Set AGENT_RUNTIME=temporal (plus TEMPORAL_HOST/PORT/NAMESPACE/TASK_QUEUE)
-// to run the agent durably on Temporal; the default is in-process. Scheduling
-// the 2-hourly digest is then a Temporal Schedule (or cron) invoking this
-// binary — it is idempotent thanks to thread memory.
 package main
 
 import (
@@ -17,18 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/m1981/temporal-go-agent-sdk/pkg/agent"
-	"github.com/m1981/temporal-go-agent-sdk/pkg/llm"
-	"github.com/m1981/temporal-go-agent-sdk/pkg/llm/anthropic"
-
-	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/classify"
 	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/config"
+	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/digestwf"
 	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/gmail"
-	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/memory"
-	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/notify"
-	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/pipeline"
-	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/prompt"
-	emailtools "github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/tools"
+	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/obs"
 )
 
 func main() {
@@ -49,68 +39,21 @@ func run() int {
 		return 0
 	}
 
-	llmClient, err := anthropic.NewClient(
-		llm.WithAPIKey(cfg.AnthropicAPIKey),
-		llm.WithModel(cfg.Model),
-	)
+	tel, err := obs.New(cfg, "email-assistant-digest")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ERROR: llm client:", err)
-		return 4
-	}
-
-	gm := gmail.NewClient(cfg.UserEmail)
-
-	reg := agent.NewToolRegistry()
-	if err := agent.RegisterTools(reg,
-		&emailtools.GmailReader{Client: gm},
-		&emailtools.GmailSender{Client: gm},
-	); err != nil {
-		fmt.Fprintln(os.Stderr, "ERROR: register tools:", err)
+		fmt.Fprintln(os.Stderr, "ERROR: observability:", err)
 		return 1
 	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tel.Shutdown(ctx)
+	}()
 
-	opts := []agent.Option{
-		agent.WithName("email-assistant"),
-		agent.WithDescription("Gmail digest assistant (Go port of projects/assistant-email)"),
-		agent.WithSystemPrompt(prompt.System(cfg.UserEmail)),
-		agent.WithLLMClient(llmClient),
-		agent.WithToolRegistry(reg),
-		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
-		agent.WithMaxIterations(cfg.MaxIterations),
-		agent.WithMaxTokens(cfg.TokenBudget),
-		agent.WithLogLevel(cfg.LogLevel),
-	}
-	if cfg.UseTemporal() {
-		opts = append(opts, agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.TemporalHost,
-			Port:      cfg.TemporalPort,
-			Namespace: cfg.TemporalNamespace,
-			TaskQueue: cfg.TemporalTaskQueue,
-		}))
-	}
-	a, err := agent.NewAgent(opts...)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "ERROR: create agent:", err)
-		return 4
-	}
-	defer a.Close()
-
-	store, err := memory.Open(cfg.MemoryPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "ERROR: thread store:", err)
-		return 1
-	}
-	defer store.Close()
-
-	dig := pipeline.Digest{
-		Gmail:      gm,
-		Classifier: classify.UrgencyClassifier{Rules: cfg.Rules},
-		Formatter:  notify.Formatter{},
-		Memory:     store,
-	}
-
+	acts := digestwf.NewActivities(cfg, tel)
 	ctx := context.Background()
-	digest, err := dig.Run(ctx, "newer_than:2h", 50)
+
+	report, err := acts.RunDigestPipeline(ctx, digestwf.Input{})
 	if err != nil {
 		var cliErr *gmail.CLIError
 		if errors.As(err, &cliErr) {
@@ -121,26 +64,23 @@ func run() int {
 		return 1
 	}
 
-	result, err := a.Run(ctx, prompt.DefaultUserQuery, nil)
+	narrative, err := acts.RunAgentNarrative(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ERROR: agent run:", err)
 		return 4
 	}
 
-	printReport(result, digest)
+	printReport(narrative, report)
 	return 0
 }
 
-func printReport(result *agent.AgentRunResult, digest pipeline.Result) {
+func printReport(nr digestwf.NarrativeReport, report digestwf.PipelineReport) {
 	bar := strings.Repeat("=", 60)
 	fmt.Printf("\n%s\nDETERMINISTIC DIGEST\n%s\n", bar, bar)
-	fmt.Print(digest.Rendered)
+	fmt.Print(report.Rendered)
 	fmt.Printf("%s\nLLM NARRATIVE\n%s\n", bar, bar)
-	fmt.Println(result.Content)
+	fmt.Println(nr.Narrative)
 	fmt.Println(bar)
-	tokens := ""
-	if u := result.LLMUsage; u != nil {
-		tokens = fmt.Sprintf("tokens=%d (in=%d out=%d) ", u.TotalTokens, u.PromptTokens, u.CompletionTokens)
-	}
-	fmt.Printf("%snew_urgent=%v\n", tokens, digest.HasNewUrgent())
+	fmt.Printf("tokens=%d (in=%d out=%d) new_urgent=%v\n",
+		nr.InputTokens+nr.OutputTokens, nr.InputTokens, nr.OutputTokens, report.NewUrgent)
 }

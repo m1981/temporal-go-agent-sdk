@@ -63,6 +63,27 @@ func TestLoadDigestInterval(t *testing.T) {
 	}
 }
 
+func TestLoadOTLPSettings(t *testing.T) {
+	setRequired(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	s, err := Load()
+	if err != nil || s.OTLPEndpoint != "" || s.OTLPProtocol != "grpc" || s.OTLPInsecure {
+		t.Errorf("defaults wrong: %+v, %v", s, err)
+	}
+
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317")
+	t.Setenv("OTLP_PROTOCOL", "http")
+	t.Setenv("OTLP_INSECURE", "true")
+	if s, err = Load(); err != nil || s.OTLPEndpoint != "localhost:4317" || s.OTLPProtocol != "http" || !s.OTLPInsecure {
+		t.Errorf("parsed wrong: %+v, %v", s, err)
+	}
+
+	t.Setenv("OTLP_PROTOCOL", "carrier-pigeon")
+	if _, err = Load(); err == nil {
+		t.Error("want error for invalid OTLP_PROTOCOL")
+	}
+}
+
 func TestLoadRejectsBadInteger(t *testing.T) {
 	setRequired(t)
 	t.Setenv("MAX_ITERATIONS", "ten")

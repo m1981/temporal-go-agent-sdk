@@ -44,7 +44,8 @@ func TestDigestWorkflowHappyPath(t *testing.T) {
 			return in.Query == defaultQuery && in.MaxResults == defaultMaxResults
 		}),
 	).Return(PipelineReport{Rendered: "# digest", Total: 3, UrgentCount: 1, NewUrgent: true}, nil)
-	env.OnActivity(a.RunAgentNarrative, mock.Anything).Return("the narrative", nil)
+	env.OnActivity(a.RunAgentNarrative, mock.Anything).
+		Return(NarrativeReport{Narrative: "the narrative", InputTokens: 1000, OutputTokens: 200}, nil)
 
 	env.ExecuteWorkflow(DigestWorkflow, Input{})
 
@@ -53,7 +54,8 @@ func TestDigestWorkflowHappyPath(t *testing.T) {
 	var out Outcome
 	require.NoError(t, env.GetWorkflowResult(&out))
 	require.False(t, out.Skipped)
-	require.Equal(t, "the narrative", out.Narrative)
+	require.Equal(t, "the narrative", out.Agent.Narrative)
+	require.Equal(t, int64(1000), out.Agent.InputTokens)
 	require.True(t, out.Pipeline.NewUrgent)
 	require.Equal(t, 3, out.Pipeline.Total)
 }

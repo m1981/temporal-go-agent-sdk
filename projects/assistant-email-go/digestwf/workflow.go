@@ -27,6 +27,19 @@ type Input struct {
 	MaxResults int
 }
 
+// WithDefaults fills zero values. Applied by both the workflow and the
+// pipeline activity, so a minimal Schedule payload and a direct activity
+// call (cmd/digest) are equally safe.
+func (in Input) WithDefaults() Input {
+	if in.Query == "" {
+		in.Query = defaultQuery
+	}
+	if in.MaxResults <= 0 {
+		in.MaxResults = defaultMaxResults
+	}
+	return in
+}
+
 // PipelineReport is the serializable outcome of the deterministic pipeline.
 type PipelineReport struct {
 	Rendered     string
@@ -36,22 +49,24 @@ type PipelineReport struct {
 	NewThreadIDs []string
 }
 
+// NarrativeReport is the serializable outcome of the LLM narrative activity.
+type NarrativeReport struct {
+	Narrative    string // the LLM's prose summary
+	InputTokens  int64
+	OutputTokens int64
+}
+
 // Outcome is the workflow result recorded in Temporal history.
 type Outcome struct {
-	Skipped   bool // true when quiet hours suppressed the run
-	Pipeline  PipelineReport
-	Narrative string // the LLM's prose summary
+	Skipped  bool // true when quiet hours suppressed the run
+	Pipeline PipelineReport
+	Agent    NarrativeReport
 }
 
 // DigestWorkflow runs one digest pass: quiet-hours gate → deterministic
 // pipeline → LLM narrative.
 func DigestWorkflow(ctx workflow.Context, in Input) (*Outcome, error) {
-	if in.Query == "" {
-		in.Query = defaultQuery
-	}
-	if in.MaxResults <= 0 {
-		in.MaxResults = defaultMaxResults
-	}
+	in = in.WithDefaults()
 
 	var a *Activities // name-based activity references; never invoked directly
 
@@ -81,10 +96,10 @@ func DigestWorkflow(ctx workflow.Context, in Input) (*Outcome, error) {
 		StartToCloseTimeout: 5 * time.Minute,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 2},
 	})
-	var narrative string
-	if err := workflow.ExecuteActivity(agentCtx, a.RunAgentNarrative).Get(agentCtx, &narrative); err != nil {
+	var agentReport NarrativeReport
+	if err := workflow.ExecuteActivity(agentCtx, a.RunAgentNarrative).Get(agentCtx, &agentReport); err != nil {
 		return nil, err
 	}
 
-	return &Outcome{Pipeline: report, Narrative: narrative}, nil
+	return &Outcome{Pipeline: report, Agent: agentReport}, nil
 }

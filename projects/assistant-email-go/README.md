@@ -50,6 +50,18 @@ memory), quiet-hour skips are visible in workflow history. `cmd/digest`
 remains the one-shot/cron fallback (ADR-005 Phase 1); `AGENT_RUNTIME=temporal`
 additionally runs its agent loop on the SDK's Temporal runtime.
 
+## Observability (ADR-008)
+
+Off by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` (e.g. `localhost:4317`)
+to export digest metrics and traces via the SDK's `pkg/observability`;
+`OTLP_PROTOCOL` (`grpc`|`http`), `OTLP_INSECURE=true` for local collectors,
+`DEPLOY_ENV` for the environment tag. Both `cmd/digest` and the worker emit
+the same `email_digest.*` series (stage durations/outcomes, emails and
+urgent per run, new-urgent and quiet-skip counters, LLM tokens); the worker
+additionally traces workflow/activity execution through Temporal's OTel
+interceptor. Token usage also lands in workflow history (`Outcome.Agent`)
+with no collector needed.
+
 ## Test
 
 ```bash
