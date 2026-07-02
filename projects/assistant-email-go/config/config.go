@@ -75,10 +75,16 @@ type Settings struct {
 	TemporalPort      int
 	TemporalNamespace string
 	TemporalTaskQueue string
+	DigestInterval    time.Duration
 }
 
 // UseTemporal reports whether the agent should run on the Temporal runtime.
 func (s *Settings) UseTemporal() bool { return s.AgentRuntime == "temporal" }
+
+// TemporalAddress is the host:port target for client.Dial.
+func (s *Settings) TemporalAddress() string {
+	return fmt.Sprintf("%s:%d", s.TemporalHost, s.TemporalPort)
+}
 
 // Load reads env vars, optionally seeding from ./.env (never overriding real
 // env). It fails fast with a descriptive error on missing or invalid values.
@@ -110,6 +116,10 @@ func Load() (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
+	digestInterval, err := durationEnv("DIGEST_INTERVAL", 2*time.Hour)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Settings{
 		AnthropicAPIKey: apiKey,
@@ -130,6 +140,7 @@ func Load() (*Settings, error) {
 		TemporalPort:      temporalPort,
 		TemporalNamespace: envDefault("TEMPORAL_NAMESPACE", "default"),
 		TemporalTaskQueue: envDefault("TEMPORAL_TASK_QUEUE", "email-assistant"),
+		DigestInterval:    digestInterval,
 	}, nil
 }
 
@@ -150,6 +161,18 @@ func intEnv(name string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s must be an integer, got %q", name, raw)
 	}
 	return v, nil
+}
+
+func durationEnv(name string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration like '2h', got %q", name, raw)
+	}
+	return d, nil
 }
 
 func listEnv(name string) []string {

@@ -7,6 +7,9 @@ replace github.com/m1981/temporal-go-agent-sdk => ../..
 require (
 	github.com/joho/godotenv v1.5.1
 	github.com/m1981/temporal-go-agent-sdk v0.0.0-00010101000000-000000000000
+	github.com/stretchr/testify v1.11.1
+	go.temporal.io/api v1.63.1
+	go.temporal.io/sdk v1.45.0
 	modernc.org/sqlite v1.53.0
 )
 
@@ -42,7 +45,6 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
@@ -65,8 +67,6 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
-	go.temporal.io/api v1.63.1 // indirect
-	go.temporal.io/sdk v1.45.0 // indirect
 	go.temporal.io/sdk/contrib/opentelemetry v0.7.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/mod v0.36.0 // indirect

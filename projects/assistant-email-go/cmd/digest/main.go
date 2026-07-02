@@ -27,44 +27,9 @@ import (
 	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/memory"
 	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/notify"
 	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/pipeline"
+	"github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/prompt"
 	emailtools "github.com/m1981/temporal-go-agent-sdk/projects/assistant-email-go/tools"
 )
-
-const defaultUserQuery = `Please check my recent emails and provide a summary.
-Focus on:
-1. Any urgent or important emails
-2. Emails that need a response
-3. Group similar emails together
-4. Ignore newsletters and promotions unless they seem important`
-
-const systemPromptTemplate = `You are an email assistant for %[1]s.
-
-## Your Role
-- Check and summarize emails
-- Identify urgent/important messages
-- Group similar emails together
-- Provide actionable insights
-
-## Email Priority Rules
-1. URGENT: Boss emails, family emergencies, time-sensitive work deadlines
-2. IMPORTANT: Client emails, meeting requests, invoices, action items
-3. LOW: Newsletters, promotions, social media notifications
-
-## How to Respond
-- Start with a brief overview (X new emails, Y urgent, Z important)
-- List urgent items first with clear action needed
-- Group similar emails (e.g., "3 newsletters from tech blogs")
-- End with recommended actions
-
-## Tools Available
-- gmail_reader: Search and read emails
-- gmail_sender: Send emails (only if user explicitly asks)
-
-## Current Context
-- User: %[1]s
-- Checking: Recent emails
-
-Be concise. The user wants a quick overview, not a detailed analysis of every email.`
 
 func main() {
 	os.Exit(run())
@@ -107,7 +72,7 @@ func run() int {
 	opts := []agent.Option{
 		agent.WithName("email-assistant"),
 		agent.WithDescription("Gmail digest assistant (Go port of projects/assistant-email)"),
-		agent.WithSystemPrompt(fmt.Sprintf(systemPromptTemplate, cfg.UserEmail)),
+		agent.WithSystemPrompt(prompt.System(cfg.UserEmail)),
 		agent.WithLLMClient(llmClient),
 		agent.WithToolRegistry(reg),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
@@ -156,7 +121,7 @@ func run() int {
 		return 1
 	}
 
-	result, err := a.Run(ctx, defaultUserQuery, nil)
+	result, err := a.Run(ctx, prompt.DefaultUserQuery, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ERROR: agent run:", err)
 		return 4

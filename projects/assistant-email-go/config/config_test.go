@@ -45,6 +45,24 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadDigestInterval(t *testing.T) {
+	setRequired(t)
+	s, err := Load()
+	if err != nil || s.DigestInterval != 2*time.Hour {
+		t.Errorf("default DigestInterval = %v, %v; want 2h", s.DigestInterval, err)
+	}
+	t.Setenv("DIGEST_INTERVAL", "30m")
+	if s, err = Load(); err != nil || s.DigestInterval != 30*time.Minute {
+		t.Errorf("DigestInterval = %v, %v; want 30m", s.DigestInterval, err)
+	}
+	for _, bad := range []string{"nope", "-1h", "0s"} {
+		t.Setenv("DIGEST_INTERVAL", bad)
+		if _, err = Load(); err == nil {
+			t.Errorf("DIGEST_INTERVAL=%q: want error", bad)
+		}
+	}
+}
+
 func TestLoadRejectsBadInteger(t *testing.T) {
 	setRequired(t)
 	t.Setenv("MAX_ITERATIONS", "ten")
