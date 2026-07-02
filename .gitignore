@@ -27,3 +27,6 @@ Thumbs.db
 # Environment
 .env
 .env.local
+projects/assistant-email/client_secret_*.json
+projects/assistant-email/email-assistant
+projects/assistant-email/.env
