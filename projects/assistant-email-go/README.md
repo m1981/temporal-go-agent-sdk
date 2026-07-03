@@ -1,6 +1,7 @@
 # assistant-email-go
 
-
+> Type: E (Data Pipeline) INFERRED | Status: active | Horizon: H1 | Role: Gmail digest agent — reads inbox, classifies urgency, writes digest
+> Charter: ../../docs/AGENT-CHARTER.md | Profile: Appendix A.5
 
 Go port of `projects/assistant-email`, built on the repo's own agent SDK
 (`pkg/agent`, `pkg/llm/anthropic`). The Python project remains the executable
