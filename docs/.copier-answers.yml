@@ -1,0 +1,11 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY.
+# This file records the answers and template version used to scaffold this
+# project. `copier update` reads it to pull in later template improvements.
+_commit: e1cd8d0
+_src_path: gh:m1981/project-template
+description: Temporal Go lang agent SDK
+enable_llm_gate: false
+install_hooks: true
+project_name: temporal-go-agent-sdk
+project_type: A
+role_line: Temporal Go lang agent SDK

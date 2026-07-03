@@ -1,5 +1,7 @@
 # assistant-email-go
 
+
+
 Go port of `projects/assistant-email`, built on the repo's own agent SDK
 (`pkg/agent`, `pkg/llm/anthropic`). The Python project remains the executable
 spec — same rules, same memory semantics, same digest output — while this

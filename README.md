@@ -1,5 +1,13 @@
 # Temporal Go Agent SDK
 
+> Type: A | Status: active | Horizon: H1 | Role: Temporal Go lang agent SDK
+> Charter: docs/AGENT-CHARTER.md | Profile: Appendix A.1
+
+Temporal Go lang agent SDK
+
+## For agents
+Read `AGENTS.md` first. Governance: `docs/DOC-GOVERNANCE-TEMPLATE.md`.
+
 A Go SDK for building durable AI agents with [Temporal](https://temporal.io). This SDK provides a clean abstraction for creating agents that can survive crashes, resume from failures, and run for hours or days.
 
 ## Features
