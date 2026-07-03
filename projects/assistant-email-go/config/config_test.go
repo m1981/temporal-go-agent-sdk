@@ -84,6 +84,40 @@ func TestLoadOTLPSettings(t *testing.T) {
 	}
 }
 
+func TestParseOTLPHeaders(t *testing.T) {
+	if h := parseOTLPHeaders(""); h != nil {
+		t.Errorf("empty input: got %v, want nil", h)
+	}
+	// Single header whose base64 value contains '=' padding — must split on
+	// the first '=' only.
+	h := parseOTLPHeaders("Authorization=Basic dXNlcjpwYXNz==")
+	if h["Authorization"] != "Basic dXNlcjpwYXNz==" {
+		t.Errorf("Authorization = %q", h["Authorization"])
+	}
+	// Multiple headers, percent-encoded value decoded.
+	h = parseOTLPHeaders("X-Scope-OrgID=tenant-1,X-Custom=hello%20world")
+	if h["X-Scope-OrgID"] != "tenant-1" || h["X-Custom"] != "hello world" {
+		t.Errorf("multi-header parse = %v", h)
+	}
+	// Malformed pair (no '=') is skipped, not fatal.
+	h = parseOTLPHeaders("no-equals-sign,Valid=ok")
+	if len(h) != 1 || h["Valid"] != "ok" {
+		t.Errorf("malformed-pair handling = %v", h)
+	}
+}
+
+func TestLoadParsesOTLPHeaders(t *testing.T) {
+	setRequired(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Basic dGVzdA==")
+	s, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.OTLPHeaders["Authorization"] != "Basic dGVzdA==" {
+		t.Errorf("OTLPHeaders = %v", s.OTLPHeaders)
+	}
+}
+
 func TestLoadRejectsBadInteger(t *testing.T) {
 	setRequired(t)
 	t.Setenv("MAX_ITERATIONS", "ten")

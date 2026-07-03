@@ -52,10 +52,21 @@ additionally runs its agent loop on the SDK's Temporal runtime.
 
 ## Observability (ADR-008)
 
-Off by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` (e.g. `localhost:4317`)
-to export digest metrics and traces via the SDK's `pkg/observability`;
-`OTLP_PROTOCOL` (`grpc`|`http`), `OTLP_INSECURE=true` for local collectors,
-`DEPLOY_ENV` for the environment tag. Both `cmd/digest` and the worker emit
+Off by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export digest metrics
+and traces via the SDK's `pkg/observability`; `OTLP_PROTOCOL` (`grpc`|`http`),
+`OTLP_INSECURE=true` for local collectors, `DEPLOY_ENV` for the environment
+tag, `OTEL_EXPORTER_OTLP_HEADERS` for backends that need an auth header
+(standard OTel format: `key=value`, comma-separated for multiple headers —
+values may be percent-encoded).
+
+Example for Grafana Cloud (OTLP over HTTP, Basic Auth from an access-policy
+token scoped to `metrics:write` + `traces:write`):
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway-prod-us-east-0.grafana.net/otlp
+export OTLP_PROTOCOL=http
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64(instanceID:token)>"
+``` Both `cmd/digest` and the worker emit
 the same `email_digest.*` series (stage durations/outcomes, emails and
 urgent per run, new-urgent and quiet-skip counters, LLM tokens); the worker
 additionally traces workflow/activity execution through Temporal's OTel

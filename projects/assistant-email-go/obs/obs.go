@@ -68,6 +68,9 @@ func New(cfg *config.Settings, service string) (*Telemetry, error) {
 		observability.WithInsecure(cfg.OTLPInsecure),
 		observability.WithDeploymentEnvironment(cfg.Environment),
 	}
+	if len(cfg.OTLPHeaders) > 0 {
+		opts = append(opts, observability.WithHeaders(cfg.OTLPHeaders))
+	}
 	metrics, err := observability.NewMetrics(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("obs: metrics: %w", err)

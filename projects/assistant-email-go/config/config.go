@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -81,6 +82,7 @@ type Settings struct {
 	OTLPEndpoint string
 	OTLPProtocol string // "grpc" or "http"
 	OTLPInsecure bool
+	OTLPHeaders  map[string]string // e.g. Grafana Cloud's Authorization: Basic <token>
 	Environment  string
 }
 
@@ -154,6 +156,7 @@ func Load() (*Settings, error) {
 		OTLPEndpoint:      strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
 		OTLPProtocol:      otlpProtocol,
 		OTLPInsecure:      boolEnv("OTLP_INSECURE"),
+		OTLPHeaders:       parseOTLPHeaders(os.Getenv("OTEL_EXPORTER_OTLP_HEADERS")),
 		Environment:       envDefault("DEPLOY_ENV", "dev"),
 	}, nil
 }
@@ -195,6 +198,35 @@ func durationEnv(name string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s must be a positive duration like '2h', got %q", name, raw)
 	}
 	return d, nil
+}
+
+// parseOTLPHeaders parses the OTel spec's OTEL_EXPORTER_OTLP_HEADERS format:
+// comma-separated key=value pairs (values MAY be percent-encoded; decoded
+// when they contain '%', used raw otherwise since not every producer of
+// this env var — including Grafana Cloud's own generated snippets — encodes
+// it). Splits each pair on the first '=' only, so a base64 value's own '='
+// padding is preserved. Malformed pairs (no '=') are skipped.
+func parseOTLPHeaders(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	headers := make(map[string]string)
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		key, value, ok := strings.Cut(pair, "=")
+		if !ok || key == "" {
+			continue
+		}
+		if decoded, err := url.QueryUnescape(value); err == nil {
+			value = decoded
+		}
+		headers[strings.TrimSpace(key)] = value
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
 }
 
 func listEnv(name string) []string {
