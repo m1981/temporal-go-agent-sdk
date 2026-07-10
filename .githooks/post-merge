@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Solo/trunk: every commit can invalidate facts; there are no merges to hook.
+python3 scripts/truth invalidate-scan

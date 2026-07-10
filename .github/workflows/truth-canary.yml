@@ -1,0 +1,51 @@
+# .github/workflows/truth-canary.yml
+#
+# Weekly immune-system check, fully unattended:
+#   1. the 19-fault canary (all CAUGHT or the workflow fails loudly)
+#   2. unit + conformance suite with the drift detector ARMED
+#      (jsonschema installed; absence would be a test failure, v0.4)
+#   3. the v0.4 regression properties (confluence, anchors, globs)
+#   4. queue-age report: surfaces items sitting past the 14-day doctor
+#      threshold into the run summary — surfacing is automated, the
+#      JUDGMENT on each item stays human.
+#
+# A red run here means the immune system has a hole: stop trusting green
+# checkmarks until it's fixed.
+
+name: truth-canary
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC (off-peak, off-the-hour)
+  workflow_dispatch: {}      # allow manual runs after repo surgery
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Arm the drift detector
+        run: pip install jsonschema --quiet
+
+      - name: Unit + conformance (armed, fail-closed)
+        run: python3 scripts/test-truth-core.py
+
+      - name: v0.4 regression properties
+        run: python3 scripts/test-truth-v04.py
+
+      - name: 19 seeded faults — all must be CAUGHT
+        run: |
+          git config --global user.email "canary@truth.local"
+          git config --global user.name  "truth-canary"
+          bash scripts/truth-canary.sh
+
+      - name: Queue-age report (surface, don't decide)
+        if: always()
+        run: |
+          {
+            echo "## Truth queue (items needing a human)"
+            python3 scripts/truth queue || echo "_queue empty — carry on_"
+          } >> "$GITHUB_STEP_SUMMARY"

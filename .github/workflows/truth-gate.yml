@@ -1,0 +1,64 @@
+# .github/workflows/truth-gate.yml
+#
+# PR/push gate: any change touching the ledger must satisfy INV-A
+# (strict append-only, prefix check) and INV-B (schema validation).
+# This is the CI equivalent of the pre-commit hook — it catches
+# `--no-verify` commits and machines without hooks installed.
+#
+# Note on fetch-depth: check-truth.sh compares the staged/new ledger
+# against the base version, so we need history, and we reconstruct the
+# "staged" state by diffing against the merge base explicitly.
+
+name: truth-gate
+
+on:
+  pull_request:
+    paths:
+      - ".truth/claims.jsonl"
+      - ".truth/schema/**"
+      - "scripts/truth"
+      - "scripts/check-truth.sh"
+  push:
+    branches: [main]
+    paths:
+      - ".truth/claims.jsonl"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # prefix check needs the base version of the ledger
+
+      - name: INV-A — new ledger must be a line-prefix extension of base
+        run: |
+          set -eu
+          LEDGER=".truth/claims.jsonl"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+            git fetch -q origin "${{ github.base_ref }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if git cat-file -e "$BASE:$LEDGER" 2>/dev/null; then
+            OLD_N=$(git show "$BASE:$LEDGER" | wc -l)
+            if ! cmp -s <(git show "$BASE:$LEDGER") <(head -n "$OLD_N" "$LEDGER"); then
+              echo "::error::INV-A violation — ledger is append-only." \
+                   "A record was modified, deleted, or inserted mid-file."
+              exit 1
+            fi
+            NEW_N=$(wc -l < "$LEDGER")
+            if [ "$NEW_N" -lt "$OLD_N" ]; then
+              echo "::error::INV-A violation — ledger shrank."
+              exit 1
+            fi
+          fi
+          echo "INV-A OK: ledger extends base by $(( $(wc -l < "$LEDGER") - ${OLD_N:-0} )) record(s)"
+
+      - name: INV-B — every record satisfies the contract (both copies, armed)
+        run: |
+          pip install jsonschema --quiet
+          python3 scripts/truth validate --stdin < .truth/claims.jsonl
+          # armed conformance: mirror AND JSON Schema, fail-closed
+          python3 scripts/test-truth-core.py

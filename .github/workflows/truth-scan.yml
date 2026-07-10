@@ -1,0 +1,66 @@
+# .github/workflows/truth-scan.yml
+#
+# The heartbeat: after every push to main, run invalidate-scan and commit
+# any resulting invalidation records back with a bot identity. This is
+# what makes knowledge decay MECHANICAL with zero humans in the loop:
+# teammate merges -> scan fires -> stale facts demoted -> demotions are
+# themselves ledger history, attributable to TRUTH_ACTOR=ci-scanner.
+#
+# Loop safety: the commit-back uses [skip ci] AND the job guards against
+# running on the bot's own commits, so scanner commits never re-trigger
+# a scan of themselves.
+#
+# Concurrency: serialized per-branch so two rapid merges can't race on
+# the append (the ledger is append-only; a lost append is a lost
+# demotion, so we queue instead).
+
+name: truth-scan
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: truth-scan-main
+  cancel-in-progress: false   # queue, never drop a scan
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    if: github.actor != 'truth-scanner[bot]' && !contains(github.event.head_commit.message, '[truth-scan]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # anchor reachability checks need real history
+
+      - name: Run invalidation scan
+        id: scan
+        env:
+          TRUTH_ACTOR: ci-scanner
+          TRUTH_SESSION: gha-${{ github.run_id }}
+        run: |
+          set -eu
+          before=$(wc -l < .truth/claims.jsonl)
+          python3 scripts/truth invalidate-scan
+          after=$(wc -l < .truth/claims.jsonl)
+          echo "new_records=$(( after - before ))" >> "$GITHUB_OUTPUT"
+
+      - name: Commit demotions back (bot identity, attributable)
+        if: steps.scan.outputs.new_records != '0'
+        run: |
+          git config user.name  "truth-scanner[bot]"
+          git config user.email "truth-scanner[bot]@users.noreply.github.com"
+          git add .truth/claims.jsonl
+          git commit -m "truth: ${{ steps.scan.outputs.new_records }} invalidation(s) from post-merge scan [truth-scan] [skip ci]"
+          git push
+
+      - name: Surface what died (visibility, not silence)
+        if: steps.scan.outputs.new_records != '0'
+        run: |
+          echo "## Facts demoted by this merge" >> "$GITHUB_STEP_SUMMARY"
+          tail -n "${{ steps.scan.outputs.new_records }}" .truth/claims.jsonl \
+            | python3 -c "import json,sys; [print('- `'+r['payload']['claim']+'` — '+r['payload'].get('reason','')) for r in map(json.loads, sys.stdin)]" \
+            >> "$GITHUB_STEP_SUMMARY"
