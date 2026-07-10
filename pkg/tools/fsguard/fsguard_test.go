@@ -26,17 +26,19 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeFS struct {
-	mu      sync.Mutex
-	files   map[string][]byte
-	readErr map[string]error
-	canonFn func(string) (string, error)
+	mu       sync.Mutex
+	files    map[string][]byte
+	readErr  map[string]error
+	writeErr map[string]error
+	canonFn  func(string) (string, error)
 }
 
 func newFakeFS() *fakeFS {
 	return &fakeFS{
-		files:   make(map[string][]byte),
-		readErr: make(map[string]error),
-		canonFn: defaultCanon,
+		files:    make(map[string][]byte),
+		readErr:  make(map[string]error),
+		writeErr: make(map[string]error),
+		canonFn:  defaultCanon,
 	}
 }
 
@@ -69,6 +71,20 @@ func (f *fakeFS) ReadFile(path string) ([]byte, error) {
 	return append([]byte(nil), b...), nil
 }
 
+func (f *fakeFS) WriteFile(path string, data []byte, _ fs.FileMode) error {
+	key, err := f.canonFn(path)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e, ok := f.writeErr[key]; ok {
+		return e
+	}
+	f.files[key] = append([]byte(nil), data...)
+	return nil
+}
+
 func (f *fakeFS) putFile(t *testing.T, path, content string) {
 	t.Helper()
 	key, err := f.canonFn(path)
@@ -85,6 +101,15 @@ func (f *fakeFS) setReadErr(t *testing.T, path string, e error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.readErr[key] = e
+}
+
+func (f *fakeFS) setWriteErr(t *testing.T, path string, e error) {
+	t.Helper()
+	key, err := f.canonFn(path)
+	require.NoError(t, err)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.writeErr[key] = e
 }
 
 func newGuard(t *testing.T) (*Guard, *fakeFS) {

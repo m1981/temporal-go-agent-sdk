@@ -53,13 +53,24 @@ type Filesystem interface {
 	// entry. Getting this wrong is a correctness AND a security bug: an
 	// unresolved alias can skip the freshness check.
 	Canonical(path string) (string, error)
+
+	// WriteFile writes data to path, creating it or truncating an existing
+	// file. It is used only by CommitWrite.
+	WriteFile(path string, data []byte, perm fs.FileMode) error
 }
 
 // Guard tracks, per session, the content hash observed for each file that has
 // been read, and validates writes against current on-disk state. A Guard is
 // safe for concurrent use by multiple goroutines.
 type Guard struct {
-	fsys  Filesystem
+	fsys Filesystem
+
+	// writeMu serializes CommitWrite so its verify-then-write sequence is
+	// atomic against other guarded writes. It is separate from mu (which only
+	// guards the reads map) so it can be held across filesystem I/O without
+	// blocking MarkRead/Snapshot or deadlocking on the map lock.
+	writeMu sync.Mutex
+
 	mu    sync.Mutex
 	reads map[string]string // canonical path -> observed content hash
 }
@@ -132,6 +143,34 @@ func (g *Guard) CheckWritable(path string) error {
 	}
 }
 
+// CommitWrite verifies the write precondition and performs the write as one
+// operation, then records the new content as the observed state. It returns the
+// same ErrNotRead/ErrStale/filesystem errors as CheckWritable, in which case the
+// file is left untouched. Compared with a separate CheckWritable-then-write, it
+// re-verifies freshness immediately before writing and holds a lock across the
+// sequence, shrinking (though, against out-of-process writers, not eliminating)
+// the time-of-check/time-of-use window.
+func (g *Guard) CommitWrite(path string, content []byte, perm fs.FileMode) error {
+	g.writeMu.Lock()
+	defer g.writeMu.Unlock()
+
+	if err := g.CheckWritable(path); err != nil {
+		return err
+	}
+	key, err := g.fsys.Canonical(path)
+	if err != nil {
+		return err
+	}
+	if err := g.fsys.WriteFile(path, content, perm); err != nil {
+		return err
+	}
+
+	g.mu.Lock()
+	g.reads[key] = hashBytes(content)
+	g.mu.Unlock()
+	return nil
+}
+
 // Snapshot is a serializable copy of a Guard's observed-read state. It exists so
 // the state can live in durable, deterministic workflow state (e.g. a Temporal
 // workflow) and be restored on replay, rather than being trapped in the memory
@@ -191,5 +230,19 @@ func (OSFilesystem) Canonical(path string) (string, error) {
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		return resolved, nil
 	}
+	// The target does not exist yet (a fresh create). Resolve the parent
+	// directory instead and rejoin the base name, so the key matches what
+	// EvalSymlinks returns once the file exists. Without this, a
+	// create-then-edit sequence keys its two operations differently (e.g. when
+	// a parent is a symlink, as /var is on macOS) and orphans recorded state.
+	dir, base := filepath.Split(abs)
+	if resolvedDir, err := filepath.EvalSymlinks(filepath.Clean(dir)); err == nil {
+		return filepath.Join(resolvedDir, base), nil
+	}
 	return filepath.Clean(abs), nil
+}
+
+// WriteFile writes data to path on disk.
+func (OSFilesystem) WriteFile(path string, data []byte, perm fs.FileMode) error {
+	return os.WriteFile(path, data, perm)
 }
