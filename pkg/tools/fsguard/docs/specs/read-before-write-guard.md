@@ -21,6 +21,10 @@ Reference the decision by number, never by title.
 - **tr-00eded8e** — the `read_file`/`write_file` tools (`pkg/tools/file`) route
   mutations through `CommitWrite`; an unread overwrite is refused. First real
   consumer of the guard.
+- **tr-16104518** — `pkg/tools/pathscope` (ADR-008) bounds where those tools
+  may reach: paths resolving outside the workspace root (traversal, absolute,
+  symlink escapes) are refused before any filesystem or guard access, via
+  `file.NewOSInWorkspace`.
 
 ## Scope and guarantees (courtesy prose)
 
@@ -34,8 +38,9 @@ out-of-process time-of-check/time-of-use window (that is wk-2f8c87bf).
 
 - ~~wk-8d3834f9 — wire fsguard into a Write/Edit tool~~ — **shipped**, see
   tr-00eded8e.
-- **wk-93dc3566** — workspace path-scoping sibling that bounds write
-  destinations (the ADR-007 boundary: freshness ≠ sandbox).
+- ~~wk-93dc3566 — workspace path-scoping sibling that bounds write
+  destinations (the ADR-007 boundary: freshness ≠ sandbox)~~ — **shipped**,
+  see tr-16104518.
 - **wk-3c9b615d** — edit-region / read-range coverage, so a partial read does
   not authorize an edit outside the observed span.
 - **wk-2f8c87bf** — close the out-of-process TOCTOU in `CommitWrite` via OS
