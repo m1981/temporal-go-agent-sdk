@@ -71,3 +71,15 @@ End substantive sessions by updating touched artifacts (roadmap checkbox,
 changelog, spec status, new ADR). Uncommitted decisions die with the context
 window. If a request conflicts with an accepted ADR, cite it and ask whether
 to supersede — don't silently comply or refuse.
+
+## 8. Truth ledger — discovery (.truth/, `scripts/truth`)
+This repo runs an append-only claims ledger beside its work: the ledger records
+*what is known and how* (see `.truth/README.md`, ADR-001..006). It overrides
+memory — a live claim is truth; an unfiled "fact" is not.
+- `scripts/truth queue` — review queue; run at session start, empty = carry on.
+- `scripts/truth list --live` — claims currently live.
+- `scripts/truth claim "<fact>" --class VERIFIED --evidence-cmd "<cmd>" --paths "<globs>"`
+  — file a fact you established this session (scope the text to the evidence).
+- `scripts/truth issue "<work>"` → `start <wk-id>` → `done <wk-id> --claim "<what it made true>"`
+  — native work kernel (ADR-002); `scripts/truth ready` lists unblocked work.
+Do not bulk-backfill; let claims accrete from real work.
