@@ -18,6 +18,9 @@ Reference the decision by number, never by title.
 - **tr-dc6b174d** — freshness is a content hash of the *current on-disk bytes*
   (`hashBytes(current)`), not a timestamp; this is the security invariant that
   defeats mtime-forgery.
+- **tr-00eded8e** — the `read_file`/`write_file` tools (`pkg/tools/file`) route
+  mutations through `CommitWrite`; an unread overwrite is refused. First real
+  consumer of the guard.
 
 ## Scope and guarantees (courtesy prose)
 
@@ -29,8 +32,8 @@ out-of-process time-of-check/time-of-use window (that is wk-2f8c87bf).
 
 ## Open work
 
-- **wk-8d3834f9** — wire fsguard into a concrete Write/Edit agent tool (first
-  real consumer).
+- ~~wk-8d3834f9 — wire fsguard into a Write/Edit tool~~ — **shipped**, see
+  tr-00eded8e.
 - **wk-93dc3566** — workspace path-scoping sibling that bounds write
   destinations (the ADR-007 boundary: freshness ≠ sandbox).
 - **wk-3c9b615d** — edit-region / read-range coverage, so a partial read does
