@@ -1,7 +1,8 @@
 # .github/workflows/truth-canary.yml
 #
 # Weekly immune-system check, fully unattended:
-#   1. the 19-fault canary (all CAUGHT or the workflow fails loudly)
+#   1. the seeded-fault canary (all CAUGHT or the workflow fails loudly;
+#      the canary prints its own count — never restate it here)
 #   2. unit + conformance suite with the drift detector ARMED
 #      (jsonschema installed; absence would be a test failure, v0.4)
 #   3. the v0.4 regression properties (confluence, anchors, globs)
@@ -36,7 +37,7 @@ jobs:
       - name: v0.4 regression properties
         run: python3 scripts/test-truth-v04.py
 
-      - name: 19 seeded faults — all must be CAUGHT
+      - name: Seeded faults — all must be CAUGHT
         run: |
           git config --global user.email "canary@truth.local"
           git config --global user.name  "truth-canary"

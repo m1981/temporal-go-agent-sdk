@@ -2,6 +2,12 @@
 
 Status: Accepted (2026-07-09, Michal; retroactive — records the v0.4.1
 decision, commits `04c376e` and `4c74f36`, which predates ADR-002)
+Amended by: ADR-002 (2026-07-08, implemented v0.5) — the three-source
+precedence in the Decision below gained a fourth entry: when the ledger
+holds issue records and `TRUTH_TRACKER_CMD` is unset, the native work
+kernel serves the issue list and the Beads default is never consulted.
+Shipped order: `--stdin`, `TRUTH_TRACKER_CMD`, native kernel, `bd ready
+--json`; the native path is canary-gated separately (FAULT R3).
 Date: 2026-07-09 (decision made 2026-07-08, v0.4.1)
 Supersedes: — (ADR-002 later narrowed the external tracker's *role* by
 adding a native work kernel; it explicitly kept this seam)

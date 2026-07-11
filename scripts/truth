@@ -1,5 +1,36 @@
 #!/usr/bin/env python3
-"""truth v0.5.4 -- append-only claims ledger with a native work kernel.
+"""truth v0.5.7 -- append-only claims ledger with a native work kernel.
+
+v0.5.7 (ADR-005 trial, impact verb): `truth impact <path>...` -- the
+  pre-edit whisper's template half. Pure fold query, read-only: for each
+  repo-root-relative path, the live/unverified claims whose
+  evidence_paths watch it (the SAME matcher invalidate-scan uses; a
+  second matcher implementation is forbidden, ADR-005) and the
+  open/claimed work premised on those claims; external premise-linked
+  issue ids are listed unconditionally (their status lives
+  tracker-side). Exit 0 silent / 3 watched; --json for harnesses.
+  Output predicts what the machinery will do (STALES / HOLDs); the verb
+  files nothing. Canary FAULTS W1-W4. The hook half (deny list,
+  PreToolUse wiring, per-session dedup) is consumer-side per ADR-003
+  rule 2; the trial venue is this template repo's own ledger (ADR-005
+  status block, amended 2026-07-10).
+
+v0.5.6 (review residuals): CSV parsing for --paths and --deps drops
+  empty entries (a trailing comma used to surface as a refusal of the
+  literal '' -- fails-closed but cryptic); the INV-M zero-match refusal
+  now also names --ttl-days as the escape for facts about files git
+  does not track; fold_issues' first-wins rule gains permutation
+  confluence coverage matching the claims fold's.
+
+v0.5.5 (audit parity): `validate` now rejects claim records with no
+  `text` -- the stdlib mirror had drifted from claims.schema.json's
+  required/minLength-1 rule (F1's defect class, caught by a fresh
+  audit; the shared conformance corpus had no missing-text fixture).
+  Intake refuses empty claim text for the same reason: `truth claim ""`
+  used to file a record the schema rejects, which the INV-B commit gate
+  would then block -- a CLI that contradicts its own gate. Canary FAULT
+  S4 gates spec-health's issues-side degradation path (ADR-003 birth
+  law: no satellite path exists ungated, including the graceful ones).
 
 v0.5.4 (INV-M, dead-tripwire intake checks): `truth claim` and
   `done --claim` now refuse two shapes of evidence_path that can never
@@ -154,6 +185,13 @@ def parse_ts(s):
         return datetime.fromisoformat(s)
     except (ValueError, TypeError):
         return None
+
+def split_csv(csv):
+    """CSV flag values (--paths, --deps): split, strip, drop empties, so
+    a trailing or doubled comma never surfaces as a refusal of ''."""
+    if not csv:
+        return []
+    return [p.strip() for p in csv.split(",") if p.strip()]
 
 # --------------------------------------------------- record construction
 
@@ -444,6 +482,40 @@ def queue_rows(claims, now):
                          "text": e["claim"]["payload"].get("text")})
     return rows
 
+def impact_report(query_paths, claims, issues, premises):
+    """ADR-005: the whisper's mechanics. For each queried path, the
+    live/unverified claims whose evidence_paths watch it, and the work
+    premised on those claims. Pure PREDICTION of what the machinery will
+    do (invalidate-scan STALES, ready HOLDs) -- files nothing, judges
+    nothing. Reuses match_paths: a second matcher implementation is
+    forbidden (two copies of the matching contract will drift, the F1/F5
+    lesson). wk- holds are listed only while open/claimed; non-wk ids
+    (external tracker premises) are listed unconditionally, since their
+    status lives tracker-side where this fold cannot see it."""
+    holders = {}
+    for wid, cids in premises.items():
+        for c in cids:
+            holders.setdefault(c, []).append(wid)
+    rows = []
+    for cid, e in sorted(claims.items()):
+        if e["status"] not in ("live", "unverified"):
+            continue
+        watched = e["claim"]["payload"].get("evidence_paths", [])
+        touched = sorted({q for q in query_paths if match_paths(q, watched)})
+        if not touched:
+            continue
+        holds = sorted(w for w in holders.get(cid, [])
+                       if not w.startswith("wk-")
+                       or issues.get(w, {}).get("status") in ("open", "claimed"))
+        rows.append({"claim": cid,
+                     "tier": e["claim"]["payload"].get("cost_tier"),
+                     "status": e["status"],
+                     "text": e["claim"]["payload"].get("text"),
+                     "touched": touched, "watched": watched,
+                     "holds": holds})
+    rows.sort(key=lambda r: (r["tier"] or "P9", r["claim"]))
+    return rows
+
 def premise_check(status, tier):
     """ADR-001 matrix. Returns (passes, warning-or-None)."""
     if status == "live":
@@ -526,6 +598,9 @@ def validate_events(events):
         if kind not in KINDS:
             errors.append(f"line {n}: unknown kind '{kind}'")
         elif kind == "claim":
+            if not p.get("text"):
+                errors.append(f"line {n}: claim missing text (schema requires "
+                              "minLength 1)")
             if p.get("evidence_class") not in EVIDENCE_CLASSES:
                 errors.append(f"line {n}: bad evidence_class")
             if p.get("cost_tier") not in TIERS:
@@ -675,6 +750,10 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
     appending. Shared by `claim` and `done --claim` so claim-at-death goes
     through the identical intake, and so `done` can validate everything
     before it appends anything (ADR-002: both records or neither)."""
+    if not text or not text.strip():
+        sys.exit("truth: claim text must be non-empty -- an assertion with "
+                 "no sentence cannot be verified, diverged from, or cited "
+                 "(schema: text minLength 1)")
     if not duplicate_ok:
         similar = duplicate_conflicts(text, claims)
         if similar:
@@ -682,7 +761,7 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
             sys.exit("truth: refusing near-duplicate of active claim(s) (G8):\n"
                      f"{lines}\nRe-file with --duplicate-ok if genuinely distinct.")
 
-    paths = [p.strip() for p in paths_csv.split(",")] if paths_csv else []
+    paths = split_csv(paths_csv)
     if paths:
         # INV-M applies to any claim carrying evidence_paths, not only
         # VERIFIED -- decide_invalidation doesn't gate on evidence_class
@@ -699,8 +778,11 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
             sys.exit(f"truth: --paths entry matches zero tracked files "
                      f"(INV-M): {dead!r} -- a literal that matches nothing "
                      "is a dead tripwire from the moment it's filed. Fix the "
-                     "path, or use a glob ('*'/'?'/'**') if you're "
-                     "intentionally watching an empty-for-now pattern.")
+                     "path; use a glob ('*'/'?'/'**') if you're intentionally "
+                     "watching an empty-for-now pattern; or, for a fact about "
+                     "a file git does not track, use --ttl-days instead "
+                     "(untracked files never appear in diffs, so a path can "
+                     "never invalidate them).")
 
     payload = {"text": text, "evidence_class": evidence_class,
                "cost_tier": tier, "ttl_days": ttl_days,
@@ -845,7 +927,7 @@ def cmd_issue(a):
     events = load_events()
     issues = fold_issues(events)
     claims, _ = fold(events)
-    deps = [d.strip() for d in a.deps.split(",")] if a.deps else []
+    deps = split_csv(a.deps)
     unknown_deps = [d for d in deps if d not in issues]
     if unknown_deps:
         # Deps must reference existing wk- issues. Because an issue cannot
@@ -1009,6 +1091,25 @@ def cmd_ready(a):
             if not i["_truth"]["ready"]:
                 print(f"HELD {i.get('id')}  broken premises: "
                       f"{', '.join(i['_truth']['broken_premises'])}")
+
+def cmd_impact(a):
+    events = load_events()
+    claims, premises = fold(events)
+    issues = fold_issues(events)
+    premises = merge_premises(premises, issue_premises(issues))
+    rows = impact_report(a.paths, claims, issues, premises)
+    if a.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        for r in rows:
+            line = (f"editing {', '.join(r['touched'])} -> next commit "
+                    f"STALES {r['claim']} ({r['tier']}, {r['status']}): "
+                    f"{r['text']}")
+            if r["holds"]:
+                line += (" -- if that premise dies, ready HOLDs "
+                         + ", ".join(r["holds"]))
+            print(line)
+    sys.exit(3 if rows else 0)
 
 def cmd_dispatch(a):
     claims, _ = fold(load_events())
@@ -1253,6 +1354,14 @@ def main():
                    help="read the issues JSON array from stdin instead of "
                         "invoking a tracker command")
     r.set_defaults(fn=cmd_ready)
+
+    im = sub.add_parser("impact", help="what knowledge does editing these "
+                        "paths endanger? (ADR-005; read-only prediction; "
+                        "exit 0 silent / 3 watched)")
+    im.add_argument("paths", nargs="+",
+                    help="repo-root-relative paths about to be edited")
+    im.add_argument("--json", action="store_true")
+    im.set_defaults(fn=cmd_impact)
 
     d = sub.add_parser("dispatch",
                        help="print the verifier context (prompt + claim only) for a fresh session")

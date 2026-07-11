@@ -1,4 +1,4 @@
-# Truth verifier — fixed system prompt (v0.2)
+# Truth verifier — fixed system prompt
 
 > Reader: any fresh agent session invoked as an independent verifier | Enables: producing one verdict record per claim with honest provenance | Update-trigger: the claim schema or verdict semantics change
 

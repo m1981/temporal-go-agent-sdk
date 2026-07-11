@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# truth-canary.sh v0.5.4 -- seeded-fault acceptance suite (seeded faults + TL hardening + adapter seam + bd normalization + ADR-002 work kernel + ADR-006 issue-fold hardening + INV-M dead-tripwire intake checks + spec-health + doc-health).
+# truth-canary.sh v0.5.7 -- seeded-fault acceptance suite (seeded faults + TL hardening + adapter seam + bd normalization + ADR-002 work kernel + ADR-006 issue-fold hardening + INV-M dead-tripwire intake checks + ADR-005 impact verb + spec-health/doc-health incl. degradation paths).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PASS=0; FAIL=0
@@ -453,12 +453,60 @@ open(".truth/claims.jsonl", "a").write(json.dumps(rec, sort_keys=True) + "\n")
 PYEOF
 if ! grep -q '"session": "s-evil"' .truth/claims.jsonl; then
   miss "fault injection failed: duplicate issue record was never appended"
-elif PATH="/usr/bin:/bin" $T ready | grep -q "^HELD $WK_STALE"; then
+elif PY3="$(command -v python3)" && PATH="/usr/bin:/bin" "$PY3" scripts/truth ready | grep -q "^HELD $WK_STALE"; then
   ok "duplicate-id append ignored; $WK_STALE still HELD (premises intact)"
 else
   miss "duplicate-id append stripped $WK_STALE's premises -- it is now ready"
 fi
 git checkout -q -- .truth/claims.jsonl 2>/dev/null || true
+
+say "FAULT W1 (ADR-005): impact on a watched path must report the claim and exit 3"
+echo whisper > w.txt
+git add w.txt   # INV-M: literal paths must be tracked at filing
+CID_W=$($T claim "w.txt says whisper" --class VERIFIED \
+        --evidence-cmd "cat w.txt" --paths "w.txt" --tier P0 --duplicate-ok)
+W1_OUT=$($T impact w.txt) && W1_RC=0 || W1_RC=$?
+if ! grep -q "$CID_W" .truth/claims.jsonl; then
+  miss "fault injection failed: watched claim $CID_W was never filed"
+elif [ "$W1_RC" -eq 3 ] && echo "$W1_OUT" | grep -q "STALES $CID_W"; then
+  ok "impact predicted STALES $CID_W and exited 3"
+else
+  miss "impact on watched path wrong (rc=$W1_RC): $W1_OUT"
+fi
+
+say "FAULT W2 (ADR-005): impact on an unwatched path must stay silent and exit 0 (fatigue budget)"
+echo quiet > unwatched-w2.txt
+git add unwatched-w2.txt
+W2_OUT=$($T impact unwatched-w2.txt) && W2_RC=0 || W2_RC=$?
+if [ "$W2_RC" -eq 0 ] && [ -z "$W2_OUT" ]; then
+  ok "unwatched path produced zero output, exit 0"
+else
+  miss "impact broke the fatigue budget (rc=$W2_RC): '$W2_OUT'"
+fi
+
+say "FAULT W3 (ADR-005): impact must predict which work ready would HOLD"
+WK_W=$($T issue "work standing on w.txt" --premise "$CID_W" 2>/dev/null)
+W3_OUT=$($T impact w.txt) && W3_RC=0 || W3_RC=$?
+if ! $T issues --json | grep -q "$WK_W"; then
+  miss "fault injection failed: issue $WK_W was never filed"
+elif [ "$W3_RC" -eq 3 ] && echo "$W3_OUT" | grep -q "HOLDs.*$WK_W"; then
+  ok "impact predicted ready HOLDs $WK_W"
+else
+  miss "impact missed the premised issue (rc=$W3_RC): $W3_OUT"
+fi
+
+say "FAULT W4 (ADR-005): unreadable ledger must degrade visibly, never exit 0/3"
+cp .truth/claims.jsonl claims.w4.bak
+echo 'this is not json' >> .truth/claims.jsonl
+W4_ERR=$($T impact w.txt 2>&1 >/dev/null) && W4_RC=0 || W4_RC=$?
+if ! grep -q 'this is not json' .truth/claims.jsonl; then
+  miss "fault injection failed: ledger was never corrupted"
+elif [ "$W4_RC" -ne 0 ] && [ "$W4_RC" -ne 3 ] && echo "$W4_ERR" | grep -q "not valid JSON"; then
+  ok "corrupted ledger degraded visibly (rc=$W4_RC), not silently"
+else
+  miss "impact on corrupt ledger wrong (rc=$W4_RC): $W4_ERR"
+fi
+mv claims.w4.bak .truth/claims.jsonl
 
 say "FAULT S1 (spec-health): spec citing only live/open ids must pass"
 mkdir -p docs/specs
@@ -491,6 +539,32 @@ if [ "$S3_RC" -eq 0 ] && echo "$S3_OUT" | grep -q "WARN  no ledger ids cited"; t
 else
   miss "unwired spec handling wrong (rc=$S3_RC): $(echo "$S3_OUT" | tail -2)"
 fi
+rm -rf docs/specs
+
+say "FAULT S4 (spec-health, ADR-003): issues-side degradation must announce and continue, not crash"
+mkdir -p docs/specs
+printf '# Spec: canary degraded\ncites %s and %s\n' "$CID_R" "$WK_DEP" > docs/specs/degraded.md
+mv scripts/truth scripts/truth.real
+cat > scripts/truth <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = "issues" ] && { echo "truth: simulated issues failure" >&2; exit 1; }
+exec python3 "$(dirname "$0")/truth.real" "$@"
+SH
+chmod +x scripts/truth
+if scripts/truth issues --json >/dev/null 2>&1; then
+  miss "fault injection failed: wrapped truth still serves issues --json"
+else
+  S4_OUT=$(bash scripts/spec-health.sh 2>&1) && S4_RC=0 || S4_RC=$?
+  if echo "$S4_OUT" | grep -q "treating issue records as absent" \
+     && echo "$S4_OUT" | grep -q "ok    $CID_R" \
+     && echo "$S4_OUT" | grep -q "FAIL  $WK_DEP  missing" \
+     && echo "$S4_OUT" | grep -q "spec-health: .* failure(s)"; then
+    ok "degraded sweep announced on stderr, still judged claims, wk- reported missing (rc=$S4_RC)"
+  else
+    miss "spec-health degradation wrong (rc=$S4_RC): $(echo "$S4_OUT" | tail -3)"
+  fi
+fi
+mv -f scripts/truth.real scripts/truth
 rm -rf docs/specs
 
 say "FAULT D1 (doc-health): clean corpus must pass; absent patterns file must only skip check A"

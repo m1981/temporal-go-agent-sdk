@@ -55,9 +55,11 @@ If that command errors, fix Beads before wiring the ledger — the ledger will d
 
 ## 2. Wire Beads to the truth ledger
 
-`truth ready` resolves its work list from, in precedence order: `--stdin`, then the `TRUTH_TRACKER_CMD` environment variable, then the default `bd ready --json`. You have two good options.
+`truth ready` resolves its work list from, in precedence order (ADR-002): `--stdin`, then the `TRUTH_TRACKER_CMD` environment variable, then the **native work kernel** whenever the ledger holds `issue` records, then the default `bd ready --json`.
 
-### Option A — direct (simplest; use if `bd ready --json` already emits `{id, title}` objects)
+> **The precedence trap:** if any session ever files a `truth issue`, the native kernel outranks the Beads default from that moment on — Option A silently stops consulting `bd` at all. Running Beads alongside the kernel therefore requires Option B (or the pipe), which explicitly pins the source. Choose one work-tracking home, or pin explicitly.
+
+### Option A — direct (simplest; use if `bd ready --json` already emits `{id, title}` objects **and** you never use the native work-kernel verbs)
 
 Nothing to configure. The default path calls `bd ready --json` for you:
 
@@ -89,7 +91,7 @@ bash scripts/truth-bd-adapter.sh | scripts/truth ready --stdin
 `truth ready` keys on exactly two fields per issue and ignores everything else:
 
 - **`id`** — must match the id you used in `truth premise <id> <claim>`. For Beads this is the hash-based id like `bd-a1b2` (or hierarchical `bd-a3f8.1`).
-- **`title`** — display only; falls back to the id if absent.
+- **`title`** — display only; when absent, `truth ready` falls back to the issue's `text` field, then to an empty string (only the native kernel's own listing falls back to the id).
 
 This is why the integration survives Beads changing its schema: the ledger never depended on Beads' full issue shape, only on an id it can match against premise links. **Do not "enrich" the adapter to pass more fields through — the join uses none of them, and a wider contract is a wider thing to break.**
 
@@ -173,7 +175,8 @@ Retraction (killing a claim permanently) is a **human** action and requires `TRU
 
 ## 6. Failure modes and what they mean
 
-- **`truth ready` says "tracker command failed … exit 127"** → `bd` isn't installed or isn't on PATH. Install it (§1), or run the ledger standalone (`truth queue`, `truth list --live`) until you do.
+- **`truth ready` says "tracker command failed … exit 127"** → `bd` isn't installed or isn't on PATH. Install it (§1), or run the ledger standalone (`truth queue`, `truth list --live`) until you do. This error can only occur while the ledger holds no `issue` records — once it does, the native kernel preempts the `bd` default and this failure mode disappears along with the Beads join (see next item).
+- **`truth ready` shows `wk-` issues instead of your Beads issues** → someone filed a native `truth issue`, and the kernel now outranks the `bd` default (§2, the precedence trap). Pin the source: `TRUTH_TRACKER_CMD="bash scripts/truth-bd-adapter.sh"`, or pipe via `--stdin`.
 - **`truth ready` returns nothing but `bd ready` returns issues** → JSON-shape mismatch on the direct path; switch to the adapter (§2 Option B).
 - **`truth-bd-adapter.sh` exits with "none had an id field this adapter recognizes"** → Beads changed its id field name; add the new key to `ID_KEYS` at the top of the adapter and report it. **Do not** patch the ledger itself.
 - **An issue is HELD and you think it shouldn't be** → check the named broken premise with `scripts/truth list` and re-verify it on the record; the hold is the system refusing to let work proceed on a fact nobody re-checked since the ground moved. That is working as designed.

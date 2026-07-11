@@ -1,7 +1,20 @@
 # ADR-005: Pre-edit whisper — mechanical impact surfacing at edit intent
 
-Status: Proposed (2026-07-09, Michal; not yet implemented — adoption gated
-on earning its keep in the pilot first, per the growth-gate discipline)
+Status: Accepted in trial (2026-07-10, Michal) — the `truth impact` verb
+and canary faults shipped template-side in v0.5.7; the whisper hook is
+wired consumer-side in the template repository itself, whose own ledger
+(created 2026-07-10) is the re-scoped trial venue: it has live watched
+paths and demonstrably active harness sessions, which the pilot this
+gate originally named could not be confirmed to have from here. Full
+acceptance — recommending the hook pattern to consumers — still waits on
+this ADR's own adoption-gate evidence: whispers that change agent
+behavior, without fatigue. Template-side faults are W1 (watched path
+reports, injection-asserted), W2 (unwatched path silent — the fatigue
+budget as a property), W3 (premised work predicted HELD), W4 (unreadable
+ledger degrades visibly); the deny-stage check is consumer policy and
+lives with the hook, outside the template canary.
+Originally: Proposed (2026-07-09; adoption gated on earning its keep in
+the pilot first, per the growth-gate discipline).
 Date: 2026-07-09
 Supersedes: —
 
@@ -111,7 +124,9 @@ trigger.
 
 Implement in the pilot repository first (spec per its convention, `wk-`
 issue, Acceptance pre-written with the W-fault names). Upstream the verb
-as v0.5.3 — with the W-faults in the shared canary — only after pilot
+as a subsequent minor version (v0.5.3, the number this gate originally
+reserved, was consumed by ADR-006's issue-fold hardening before this ADR
+was adopted) — with the W-faults in the shared canary — only after pilot
 sessions demonstrate signal (whispers that changed an agent's action)
 without fatigue (whisper count per session staying low). If the fatigue
 budget fails in practice, the fallback is narrowing the whisper to P0/P1

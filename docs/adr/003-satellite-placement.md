@@ -2,6 +2,11 @@
 
 Status: Accepted (2026-07-09, Michal; retroactive — records the doctrine
 already applied in v0.5.1 and v0.5.2)
+Amended by: note (2026-07-10) — the Consequences' pending application
+landed as this ADR predicted: the `truth impact` verb passed the
+placement test and shipped template-side (v0.5.7, FAULTS W1–W4 per
+rule 3); the whisper hook and its deny-list config stayed consumer-side
+(ADR-005, accepted in trial).
 Date: 2026-07-09
 Supersedes: —
 

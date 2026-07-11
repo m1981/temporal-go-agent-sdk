@@ -1,6 +1,9 @@
 # ADR-002: Native work kernel — issues as ledger records
 
 Status: Accepted (2026-07-08, Michal; implemented in v0.5)
+Amended by: ADR-006 (2026-07-09) — the "update-by-refile" last-wins rule
+stated under **Records** below described a verb the CLI never implemented;
+`fold_issues` is now FIRST-WINS on duplicate ids, identical to `fold()`.
 Date: 2026-07-08
 Supersedes: — (narrows the role of the external-tracker default introduced
 with the v0.4.1 adapter seam; does not remove the seam)
