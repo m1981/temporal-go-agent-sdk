@@ -72,7 +72,16 @@ changelog, spec status, new ADR). Uncommitted decisions die with the context
 window. If a request conflicts with an accepted ADR, cite it and ask whether
 to supersede — don't silently comply or refuse.
 
-## 8. Truth ledger — discovery (.truth/, `scripts/truth`)
+## 8. Design review & evaluations — discovery
+- `docs/design-review-checklist.md` — the AP-NN anti-pattern / PR-NN principle
+  catalog. Cite entries by id in ADRs, specs, and reviews ("violates AP-05")
+  instead of re-arguing them.
+- `docs/evaluations/` — competitor dossiers pinned to commit SHAs, and the
+  PAT-NNN registry of designs to adopt. Reference external code ONLY as
+  `repo@SHA:file:line`. ADR-011 holds the architecture identity and the
+  phase roadmap (wk- ids).
+
+## 9. Truth ledger — discovery (.truth/, `scripts/truth`)
 This repo runs an append-only claims ledger beside its work: the ledger records
 *what is known and how* (see `.truth/README.md`, ADR-001..006). It overrides
 memory — a live claim is truth; an unfiled "fact" is not.
