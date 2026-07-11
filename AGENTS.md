@@ -67,10 +67,13 @@ Any blank answer → don't write the doc. The pre-commit hook enforces the
   forbidden). Run type checker + doc generator before claiming API stability.
 
 ## 7. Session hygiene (charter §7)
-End substantive sessions by updating touched artifacts (roadmap checkbox,
+Start substantive sessions at `RESUME.md` (bootstrap sequence, current focus,
+verification debt); end them by updating touched artifacts (RESUME.md,
 changelog, spec status, new ADR). Uncommitted decisions die with the context
-window. If a request conflicts with an accepted ADR, cite it and ask whether
-to supersede — don't silently comply or refuse.
+window. Before editing a file, run `scripts/truth impact <path>` — it names
+the claims the edit will stale and the work it will HOLD. If a request
+conflicts with an accepted ADR, cite it and ask whether to supersede — don't
+silently comply or refuse.
 
 ## 8. Design review & evaluations — discovery
 - `docs/design-review-checklist.md` — the AP-NN anti-pattern / PR-NN principle
