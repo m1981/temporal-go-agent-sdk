@@ -28,14 +28,22 @@ Reference the decision by number, never by title.
 - **tr-d38998db** — edit-region coverage (ADR-009): a partial read no longer
   authorizes an edit outside its observed line span; `CheckEditable` refuses
   it with `ErrRegionNotRead`, additive to the freshness check.
+- **tr-b9e3683f** — atomic commit primitives (ADR-010): `CommitWrite` refuses
+  a raced external create (`ErrConcurrentCreate`, O_EXCL) and replaces
+  existing files via temp+rename so readers never see a torn write; the
+  existing-file TOCTOU window is narrowed, **not closed** — the residual is
+  named in ADR-010.
 
 ## Scope and guarantees (courtesy prose)
 
 The guard enforces **freshness only**: it refuses a write when the target was
 never observed (`ErrNotRead`) or changed since it was observed (`ErrStale`),
 keyed by a canonical path. It is deliberately **not** a sandbox — it does not
-bound *where* a write lands (that is wk-93dc3566), and it does not close the
-out-of-process time-of-check/time-of-use window (that is wk-2f8c87bf).
+bound *where* a write lands (that is wk-93dc3566). The out-of-process
+time-of-check/time-of-use window is hardened but not eliminated: a raced
+create is refused and overwrites publish atomically (tr-b9e3683f), while an
+external modification in the final re-read-to-rename gap is still overwritten
+(ADR-010, Residual risk — a POSIX limit).
 
 ## Open work
 
@@ -47,8 +55,9 @@ out-of-process time-of-check/time-of-use window (that is wk-2f8c87bf).
 - ~~wk-3c9b615d — edit-region / read-range coverage, so a partial read does
   not authorize an edit outside the observed span~~ — **shipped**, see
   tr-d38998db.
-- **wk-2f8c87bf** — close the out-of-process TOCTOU in `CommitWrite` via OS
-  atomic primitives.
+- ~~wk-2f8c87bf — close the out-of-process TOCTOU in `CommitWrite` via OS
+  atomic primitives~~ — **shipped as a hardening, not a closure** (POSIX has
+  no content compare-and-swap; residual window in ADR-010), see tr-b9e3683f.
 
 ## Acceptance (pre-written `done --claim` texts)
 
@@ -61,5 +70,9 @@ commit trips its own path tripwire):
   refused before touching disk; covered by tests."
 - wk-3c9b615d → "fsguard refuses an edit whose byte/line span was never observed
   by a Read; covered by tests."
-- wk-2f8c87bf → "CommitWrite performs verify-and-write atomically against an
-  out-of-process writer; covered by a TOCTOU race test."
+- wk-2f8c87bf → filed as tr-b9e3683f, deliberately scoped **tighter** than the
+  text pre-written here: "verify-and-write atomically against an out-of-process
+  writer" overclaims what a content-hash guard on POSIX can guarantee. The
+  filed claim names the guarantees added (O_EXCL create refusal, atomic
+  replace, late re-verify) and that the existing-file residual window remains
+  per ADR-010.
