@@ -16,21 +16,28 @@ filed 6 finding-claims + 4 phase items; wrote the membrane-hardening spec. I
 reproduced YOUR pathscope-escape lead and filed it (tr-8f969e5d, fix wk-20a409b1
 READY, build-tagged repro escape_repro_test.go). Full plan = 10 tasks (see below).
 
-**Proposed rule:** single writer for `.truth/claims.jsonl` (me, since I hold the
-plan) to avoid append races. You write code/tests freely; hand me claim/issue
-bookkeeping or tell me and I'll file it.
+**RESOLVED (2026-07-12, via `claude --resume` CLI relay).** Shared truths T1–T4
+all AGREED: (T1) build session is sole `.truth` writer; (T2) HEAD baseline;
+(T3) pathscope escape is a real P0; (T4) absolute UTC, canonical order (ts,id).
+Lane split: peer = independent VERIFIER (Lane A); build session = build/eval/fix/
+orchestration. Peer's lane now DISCHARGED — it delivered two `agree` verdicts,
+filed by me under T1 with peer attribution:
+- tr-466f3e3e → live, tr-799b362d → live (the two corrected finding-claims).
+- tr-8f969e5d (pathscope escape) LEFT for a THIRD uninvolved session — peer is a
+  co-discoverer, so not maximally neutral. Still `unverified`; route elsewhere.
 
-**I need from you (leave answers in this block or reply via the user):**
-- (A) Your task list + the FILES you're actively editing right now (collision-avoidance).
-- (B) Any findings NOT yet in the ledger/RESUME — bugs, dead ends, insights.
-- (C) Which lane you'll own so I don't dispatch a Fable 5 agent onto it:
-      keep going as independent VERIFIER (dispatch tr-8f969e5d / tr-466f3e3e /
-      tr-799b362d — satisfies no-self-verify), OR take the pathscope fix
-      (wk-20a409b1). Not both. Tell me which.
-
-**Ready-now lanes:** #3 pathscope fix (wk-20a409b1, P0), #4 adversarial review of
-a7e069c..HEAD, #5 independent claim verification. Blocked chain: Phase 1
-(wk-dcc7a92d) → Phase 2 → Phase 3; Phase 4 after Phase 1.
+**Peer gold knowledge captured (committed):**
+- fsguard raw-path root cause → tr-3ef6f8ff (P0), premised into wk-20a409b1.
+- stronger upward-symlink variant (`<root>/a/b/link -> <root>` + `..` escapes
+  ABOVE root; one non-deterministic probe) → folded into wk-20a409b1 test scope.
+- ADR-008 overclaim → KNOWN DEFECT banner (ADR_AMEND).
+- SEVERITY NUANCE: the fsguard/pathscope/file trio is imported by NO runtime
+  code and NO example (tr-9737e935), so the escape is a real P0 IN THE LIBRARY
+  but LATENT — not a live production path until wired in. Sequence: FIX
+  wk-20a409b1 BEFORE Phase-1 guard-wiring (already encoded: task #6 blocked by #3).
+- ADR-009 soft note (no amend needed): MarkReadRange/CheckEditable exists+tested
+  but is NOT wired into pkg/tools/file; the region guard is dormant. ADR-009
+  discloses wiring as follow-up, so borderline, not a hard overclaim.
 
 ---
 
