@@ -25,6 +25,9 @@ Reference the decision by number, never by title.
   may reach: paths resolving outside the workspace root (traversal, absolute,
   symlink escapes) are refused before any filesystem or guard access, via
   `file.NewOSInWorkspace`.
+- **tr-d38998db** — edit-region coverage (ADR-009): a partial read no longer
+  authorizes an edit outside its observed line span; `CheckEditable` refuses
+  it with `ErrRegionNotRead`, additive to the freshness check.
 
 ## Scope and guarantees (courtesy prose)
 
@@ -41,8 +44,9 @@ out-of-process time-of-check/time-of-use window (that is wk-2f8c87bf).
 - ~~wk-93dc3566 — workspace path-scoping sibling that bounds write
   destinations (the ADR-007 boundary: freshness ≠ sandbox)~~ — **shipped**,
   see tr-16104518.
-- **wk-3c9b615d** — edit-region / read-range coverage, so a partial read does
-  not authorize an edit outside the observed span.
+- ~~wk-3c9b615d — edit-region / read-range coverage, so a partial read does
+  not authorize an edit outside the observed span~~ — **shipped**, see
+  tr-d38998db.
 - **wk-2f8c87bf** — close the out-of-process TOCTOU in `CommitWrite` via OS
   atomic primitives.
 
