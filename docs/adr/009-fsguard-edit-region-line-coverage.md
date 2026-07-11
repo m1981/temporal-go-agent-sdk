@@ -1,8 +1,18 @@
 # ADR-009: fsguard edit-region coverage tracked as line ranges
 
-> Status: Accepted
+> Status: Accepted — with a CLARIFICATION (2026-07-12)
 > Date: 2026-07-11
 > Supersedes: —
+
+> **CLARIFICATION (2026-07-12):** the closing line "this closes the edit-region
+> coverage sibling" overstates operational reality. `MarkReadRange`/
+> `CheckEditable` are built and tested but have ZERO non-test callers, and the
+> write path (`CommitWrite`) is freshness-only — it never consults
+> `CheckEditable` or the ranges map, so a partial read still authorizes a
+> whole-file overwrite (by design: `TestCheckWritable_AfterPartialRead_
+> StillFreshnessOnly`). The primitive exists; it protects nothing until an Edit
+> tool routes through `CheckEditable`. Read "closes" as "provides the
+> primitive," not "enforces coverage on writes." Wiring is tracked separately.
 
 ## Context
 
