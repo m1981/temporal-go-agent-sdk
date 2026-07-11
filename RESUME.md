@@ -66,6 +66,13 @@ filed by me under T1 with peer attribution:
 
 ## Verification debt (independent verifier pass — 2026-07-12)
 
+> UPDATE (post-fix): the wk-20a409b1 commit (5586595) mechanically re-staled 6
+> fsguard-spec claims (tr-00eded8e, tr-16104518, tr-1726ec57, tr-b9e3683f,
+> tr-d38998db, tr-dc6b174d) — all still TRUE (suites green), so `spec-health`
+> now FAILS on the fsguard spec pending re-dispatch. Plus tr-d99911b4 (fix
+> completion, unverified). These are task #5; do NOT self-verify. Phase 1
+> premises are all live, so this does not block Phase 1.
+
 All 12 dispatched claims now carry a filed verdict (10 agree, 2 diverge).
 - Agreed (evidence supports text): tr-1726ec57, tr-dc6b174d, tr-00eded8e,
   tr-d38998db, tr-16104518, tr-b9e3683f, tr-42e5b4c3, tr-e1d73540,
