@@ -52,12 +52,12 @@ filed by me under T1 with peer attribution:
 
 ## Current focus
 
-- **TOP / SECURITY P0 — wk-20a409b1**: pathscope workspace escape, CONFIRMED
-  and repro'd (claim tr-8f969e5d). A scoped write to a raw `<root>/link/../x`
-  (link→outside) is accepted and lands OUTSIDE root. Repro:
-  `go test -tags escape_repro -run TestScopedWrite ./pkg/tools/file/`. READY
-  now; fix before relying on pathscope for any sandboxing.
-- **wk-0eaee8d9** (ADR-011 phase 1 membrane). Spec:
+- **pathscope escape — FIXED** (wk-20a409b1 closed at commit 5586595, claim
+  tr-d99911b4). Canonical now resolves symlinks in kernel order and fsguard
+  writes only the canonical path; 4 escape variants refuse, guarded by
+  `TestScopedWrite_*` in the normal suite. Residuals (open, documented):
+  ADR-010 TOCTOU + symlink-swap-at-open (no O_NOFOLLOW), unscoped bundles.
+- **NEXT / actionable — wk-0eaee8d9** (ADR-011 phase 1 membrane). Spec:
   `internal/runtime/docs/specs/membrane-hardening.md`. READY — re-filed on the
   five LIVE premises (old wk-dcc7a92d closed as superseded; its two diverged
   premises could not be detached). Practically gated on wk-20a409b1: fix the
