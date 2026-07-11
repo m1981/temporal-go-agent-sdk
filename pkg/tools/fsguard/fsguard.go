@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -217,7 +218,11 @@ func (g *Guard) CheckEditable(path string, span LineRange) error {
 		return err
 	}
 
-	current, err := g.fsys.ReadFile(path)
+	// All filesystem I/O goes through the canonical key, not the raw path:
+	// the raw spelling may traverse symlinks and ".." that the OS resolves to
+	// a DIFFERENT location than the one this state is keyed (and any scope
+	// decision was made) on. See wk-20a409b1.
+	current, err := g.fsys.ReadFile(key)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -301,7 +306,7 @@ func (g *Guard) CheckWritable(path string) error {
 		return err
 	}
 
-	current, err := g.fsys.ReadFile(path)
+	current, err := g.fsys.ReadFile(key) // canonical, not raw: see CheckEditable
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -355,12 +360,20 @@ func (g *Guard) CommitWrite(path string, content []byte, perm fs.FileMode) error
 
 	// The freshness re-read happens here, immediately before the write call,
 	// so the unavoidable check-to-write gap is as small as the seam allows.
-	current, err := g.fsys.ReadFile(path)
+	//
+	// SECURITY (wk-20a409b1): every filesystem call below uses key — the
+	// canonical, symlink-resolved path — never the raw path. The raw spelling
+	// may traverse symlinks and ".." that the OS resolves to a location other
+	// than the one the freshness state is keyed on (and that any pathscope
+	// check approved), so writing the raw path could land bytes outside an
+	// approved workspace. The path the caller's scope approved is exactly the
+	// path written.
+	current, err := g.fsys.ReadFile(key)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		// Believed new: create exclusively, so a create that raced in after
 		// the read above fails closed instead of being clobbered.
-		if cerr := g.fsys.CreateExclusive(path, content, perm); cerr != nil {
+		if cerr := g.fsys.CreateExclusive(key, content, perm); cerr != nil {
 			if errors.Is(cerr, fs.ErrExist) {
 				return ErrConcurrentCreate
 			}
@@ -381,7 +394,7 @@ func (g *Guard) CommitWrite(path string, content []byte, perm fs.FileMode) error
 		// Atomic replace: readers see old or new content, never torn. A
 		// modification landing between the re-read above and the rename inside
 		// WriteFileAtomic is still overwritten — the ADR-010 residual.
-		if werr := g.fsys.WriteFileAtomic(path, content, perm); werr != nil {
+		if werr := g.fsys.WriteFileAtomic(key, content, perm); werr != nil {
 			return werr
 		}
 	}
@@ -460,27 +473,123 @@ func (OSFilesystem) ReadFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// Canonical resolves path to an absolute, symlink-resolved key. For a
-// not-yet-existing file (a fresh create) it falls back to the cleaned absolute
-// path, since EvalSymlinks requires the target to exist.
+// Canonical resolves path to an absolute, symlink-resolved key by walking it
+// component by component exactly as the kernel would: each symlink is resolved
+// where it is encountered, and each ".." applies to the already-RESOLVED
+// prefix — never lexically to an unresolved symlink.
+//
+// This ordering is a security invariant (wk-20a409b1): cleaning ".." lexically
+// first (as filepath.Abs/Clean do) judges "<root>/link/../x" as "<root>/x",
+// while the kernel resolves link to its target BEFORE applying "..", so the
+// raw path lands outside the root. Canonical must agree with the kernel, and
+// the Guard then operates on this canonical path (see CommitWrite), so the
+// location that scope checks approve is the location that gets written.
+//
+// For a not-yet-existing suffix (a fresh create) the existing prefix is fully
+// resolved and the remaining components are appended; below a nonexistent
+// component nothing on disk can be a symlink, so lexical ".." handling there
+// matches what the kernel would do if the directories were created first. Any
+// other resolution failure (permissions, I/O, a symlink loop) is returned as
+// an error — fail closed, never a guessed key.
 func (OSFilesystem) Canonical(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
+	abs := path
+	if !filepath.IsAbs(abs) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		// Plain concatenation, NOT filepath.Join: Join would clean ".."
+		// segments lexically before the symlink-aware walk sees them.
+		abs = wd + string(filepath.Separator) + abs
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved, nil
+	return resolveSymlinkAware(abs)
+}
+
+// maxSymlinkHops bounds symlink chains during resolution, mirroring the
+// kernel's ELOOP limit (40 on Linux).
+const maxSymlinkHops = 40
+
+// resolveSymlinkAware resolves the absolute path abs with kernel-order
+// semantics: symlinks first, ".." against the resolved prefix. See the
+// Canonical doc comment for why the order matters.
+func resolveSymlinkAware(abs string) (string, error) {
+	vol := filepath.VolumeName(abs)
+	resolved := vol + string(filepath.Separator)
+	pending := splitPathComponents(abs[len(vol):])
+	var missing []string // lexical tail below the first nonexistent component
+	hops := 0
+
+	for len(pending) > 0 {
+		c := pending[0]
+		pending = pending[1:]
+
+		if len(missing) > 0 {
+			// Below a nonexistent component nothing can be a symlink, so
+			// ".." here safely pops the pending tail (or falls through to
+			// the resolved prefix once the tail is empty).
+			if c == ".." {
+				missing = missing[:len(missing)-1]
+			} else {
+				missing = append(missing, c)
+			}
+			continue
+		}
+		if c == ".." {
+			// resolved is fully symlink-free by induction, so its lexical
+			// parent IS its kernel parent. Dir of a root is itself.
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+		next := filepath.Join(resolved, c)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				missing = append(missing, c)
+				continue
+			}
+			return "", err // fail closed on any other resolution error
+		}
+		if fi.Mode()&fs.ModeSymlink == 0 {
+			resolved = next
+			continue
+		}
+		hops++
+		if hops > maxSymlinkHops {
+			return "", &fs.PathError{Op: "canonical", Path: abs, Err: errors.New("too many levels of symbolic links")}
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			tvol := filepath.VolumeName(target)
+			resolved = tvol + string(filepath.Separator)
+			target = target[len(tvol):]
+		}
+		// A relative target resolves against the link's directory, which is
+		// exactly the current resolved prefix. Prepend the target's components
+		// so any ".." or nested symlink inside it is walked, not cleaned.
+		pending = append(splitPathComponents(target), pending...)
 	}
-	// The target does not exist yet (a fresh create). Resolve the parent
-	// directory instead and rejoin the base name, so the key matches what
-	// EvalSymlinks returns once the file exists. Without this, a
-	// create-then-edit sequence keys its two operations differently (e.g. when
-	// a parent is a symlink, as /var is on macOS) and orphans recorded state.
-	dir, base := filepath.Split(abs)
-	if resolvedDir, err := filepath.EvalSymlinks(filepath.Clean(dir)); err == nil {
-		return filepath.Join(resolvedDir, base), nil
+	if len(missing) > 0 {
+		return filepath.Join(append([]string{resolved}, missing...)...), nil
 	}
-	return filepath.Clean(abs), nil
+	return resolved, nil
+}
+
+// splitPathComponents splits a path suffix into its components, dropping empty
+// segments and "." (both lexically neutral); ".." is preserved for the walk.
+func splitPathComponents(p string) []string {
+	parts := strings.FieldsFunc(p, func(r rune) bool {
+		return r == '/' || r == filepath.Separator
+	})
+	comps := parts[:0]
+	for _, c := range parts {
+		if c != "." {
+			comps = append(comps, c)
+		}
+	}
+	return comps
 }
 
 // CreateExclusive writes data to path with O_CREATE|O_EXCL semantics: it fails
