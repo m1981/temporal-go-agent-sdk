@@ -1,10 +1,13 @@
 package fsguard
 
 import (
+	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -102,6 +105,123 @@ func TestGuard_WithOSFilesystem_EndToEnd(t *testing.T) {
 	// A change on disk between read and write is detected as stale.
 	require.NoError(t, os.WriteFile(path, []byte("v2-tampered"), 0o600))
 	assert.ErrorIs(t, g.CheckWritable(path), ErrStale)
+}
+
+// CreateExclusive on the real OS: creates a missing file with the given
+// content, and refuses an existing one with fs.ErrExist, leaving it untouched.
+func TestOSFilesystem_CreateExclusive_NewAndExisting(t *testing.T) {
+	var osfs OSFilesystem
+	dir := t.TempDir()
+	path := filepath.Join(dir, "new.txt")
+
+	require.NoError(t, osfs.CreateExclusive(path, []byte("first"), 0o644))
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "first", string(got))
+
+	err = osfs.CreateExclusive(path, []byte("second"), 0o644)
+	assert.ErrorIs(t, err, fs.ErrExist, "an existing file must refuse an exclusive create")
+	got, err = os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "first", string(got), "a refused exclusive create must not touch the file")
+}
+
+// WriteFileAtomic replaces content and leaves no temp-file litter behind.
+func TestOSFilesystem_WriteFileAtomic_ReplacesContentNoLitter(t *testing.T) {
+	var osfs OSFilesystem
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	require.NoError(t, os.WriteFile(path, []byte("old"), 0o644))
+
+	require.NoError(t, osfs.WriteFileAtomic(path, []byte("new"), 0o644))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "new", string(got))
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "no temp files may be left behind")
+	assert.Equal(t, "f.txt", entries[0].Name())
+}
+
+// WriteFileAtomic preserves an existing file's mode (temp+rename would
+// otherwise silently reset it), and applies perm when creating fresh.
+func TestOSFilesystem_WriteFileAtomic_Permissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission semantics")
+	}
+	var osfs OSFilesystem
+	dir := t.TempDir()
+
+	existing := filepath.Join(dir, "tight.txt")
+	require.NoError(t, os.WriteFile(existing, []byte("old"), 0o600))
+	require.NoError(t, osfs.WriteFileAtomic(existing, []byte("new"), 0o644))
+	fi, err := os.Stat(existing)
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o600), fi.Mode().Perm(), "an existing file keeps its mode")
+
+	fresh := filepath.Join(dir, "fresh.txt")
+	require.NoError(t, osfs.WriteFileAtomic(fresh, []byte("new"), 0o640))
+	fi, err = os.Stat(fresh)
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o640), fi.Mode().Perm(), "a fresh file gets the requested perm")
+}
+
+// A missing parent directory fails cleanly (the temp file cannot be staged).
+func TestOSFilesystem_WriteFileAtomic_MissingDirFails(t *testing.T) {
+	var osfs OSFilesystem
+	err := osfs.WriteFileAtomic(filepath.Join(t.TempDir(), "no-such-dir", "f.txt"), []byte("x"), 0o644)
+	assert.Error(t, err)
+}
+
+// Rename atomicity: a concurrent reader must always observe one complete
+// payload — never a torn mix, a truncated file, or a missing path. A
+// truncate-then-write implementation fails this probabilistically; rename
+// guarantees it.
+func TestOSFilesystem_WriteFileAtomic_ConcurrentReaderNeverTorn(t *testing.T) {
+	var osfs OSFilesystem
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.txt")
+
+	const size = 128 * 1024
+	payloadA := bytes.Repeat([]byte{'a'}, size)
+	payloadB := bytes.Repeat([]byte{'b'}, size)
+	require.NoError(t, os.WriteFile(path, payloadA, 0o644))
+
+	done := make(chan struct{})
+	var readerErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				readerErr = fmt.Errorf("reader saw error (path must always exist): %w", err)
+				return
+			}
+			if len(b) != size || b[0] != b[size-1] || !bytes.Equal(b, bytes.Repeat(b[:1], size)) {
+				readerErr = fmt.Errorf("reader saw a torn write: len=%d first=%q last=%q", len(b), b[0], b[len(b)-1])
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 150; i++ {
+		p := payloadA
+		if i%2 == 0 {
+			p = payloadB
+		}
+		require.NoError(t, osfs.WriteFileAtomic(path, p, 0o644))
+	}
+	close(done)
+	wg.Wait()
+	require.NoError(t, readerErr)
 }
 
 // CommitWrite over a real filesystem: it creates a new file, records it, and a

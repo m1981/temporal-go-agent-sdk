@@ -31,6 +31,13 @@ type fakeFS struct {
 	readErr  map[string]error
 	writeErr map[string]error
 	canonFn  func(string) (string, error)
+
+	// writeHook, when set, runs at the start of every write-side seam call
+	// (CreateExclusive, WriteFileAtomic), BEFORE the fake mutates anything.
+	// It simulates a racing external writer landing in the gap between the
+	// Guard's freshness check and its write. It is invoked without f.mu
+	// held, so the hook may call putFile.
+	writeHook func()
 }
 
 func newFakeFS() *fakeFS {
@@ -71,11 +78,34 @@ func (f *fakeFS) ReadFile(path string) ([]byte, error) {
 	return append([]byte(nil), b...), nil
 }
 
-func (f *fakeFS) WriteFile(path string, data []byte, _ fs.FileMode) error {
+// CreateExclusive mirrors O_CREATE|O_EXCL: it refuses with fs.ErrExist when
+// the path already holds a file — including one the writeHook just planted.
+func (f *fakeFS) CreateExclusive(path string, data []byte, _ fs.FileMode) error {
 	key, err := f.canonFn(path)
 	if err != nil {
 		return err
 	}
+	f.runWriteHook()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.files[key]; exists {
+		return fs.ErrExist
+	}
+	if e, ok := f.writeErr[key]; ok {
+		return e
+	}
+	f.files[key] = append([]byte(nil), data...)
+	return nil
+}
+
+// WriteFileAtomic models rename atomicity: the content is replaced in a single
+// mutex-guarded step, so no torn intermediate is ever observable.
+func (f *fakeFS) WriteFileAtomic(path string, data []byte, _ fs.FileMode) error {
+	key, err := f.canonFn(path)
+	if err != nil {
+		return err
+	}
+	f.runWriteHook()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if e, ok := f.writeErr[key]; ok {
@@ -83,6 +113,22 @@ func (f *fakeFS) WriteFile(path string, data []byte, _ fs.FileMode) error {
 	}
 	f.files[key] = append([]byte(nil), data...)
 	return nil
+}
+
+func (f *fakeFS) runWriteHook() {
+	f.mu.Lock()
+	hook := f.writeHook
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+func (f *fakeFS) setWriteHook(t *testing.T, hook func()) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.writeHook = hook
 }
 
 func (f *fakeFS) putFile(t *testing.T, path, content string) {

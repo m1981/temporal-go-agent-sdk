@@ -55,6 +55,14 @@ var (
 	// ErrInvalidRange means a supplied LineRange is malformed (Start < 1 or
 	// End < Start).
 	ErrInvalidRange = errors.New("invalid line range: start must be >= 1 and end must be >= start")
+
+	// ErrConcurrentCreate means the guard verified that a path did not exist,
+	// but another process created it in the gap before the write; the create
+	// was refused, so the concurrently created file survives untouched. It is
+	// distinct from ErrStale, which presumes a prior read of the file — a
+	// raced create was never read at all, and the corrective action is a
+	// first read, not a re-read.
+	ErrConcurrentCreate = errors.New("file was created concurrently by another process; read it first before writing to it")
 )
 
 // LineRange is a closed, 1-based interval of lines: Start is the first line
@@ -85,9 +93,20 @@ type Filesystem interface {
 	// unresolved alias can skip the freshness check.
 	Canonical(path string) (string, error)
 
-	// WriteFile writes data to path, creating it or truncating an existing
-	// file. It is used only by CommitWrite.
-	WriteFile(path string, data []byte, perm fs.FileMode) error
+	// CreateExclusive writes data to a path that must not exist yet
+	// (O_CREATE|O_EXCL semantics). If the path already exists — including one
+	// created by another process a moment earlier — it returns an error
+	// satisfying errors.Is(err, fs.ErrExist) and leaves the existing file
+	// untouched. CommitWrite uses it for new-file creates so a racing
+	// external create is refused rather than clobbered.
+	CreateExclusive(path string, data []byte, perm fs.FileMode) error
+
+	// WriteFileAtomic replaces the content of path in one atomic step, so a
+	// concurrent reader observes either the old content or the new in full,
+	// never a torn intermediate (production: write a temp file in path's
+	// directory, then rename over path). CommitWrite uses it for
+	// existing-file overwrites.
+	WriteFileAtomic(path string, data []byte, perm fs.FileMode) error
 }
 
 // Guard tracks, per session, the content hash observed for each file that has
@@ -307,24 +326,64 @@ func (g *Guard) CheckWritable(path string) error {
 
 // CommitWrite verifies the write precondition and performs the write as one
 // operation, then records the new content as the observed state. It returns the
-// same ErrNotRead/ErrStale/filesystem errors as CheckWritable, in which case the
-// file is left untouched. Compared with a separate CheckWritable-then-write, it
-// re-verifies freshness immediately before writing and holds a lock across the
-// sequence, shrinking (though, against out-of-process writers, not eliminating)
-// the time-of-check/time-of-use window.
+// same ErrNotRead/ErrStale/filesystem errors as CheckWritable — plus
+// ErrConcurrentCreate for a lost create race — and in every refusal case the
+// on-disk file is left untouched.
+//
+// Against out-of-process writers it guarantees (ADR-010):
+//   - A new-file create uses O_EXCL semantics (Filesystem.CreateExclusive), so
+//     a file created externally between the existence check and the write is
+//     refused with ErrConcurrentCreate, never clobbered.
+//   - An existing-file overwrite replaces content atomically
+//     (Filesystem.WriteFileAtomic, temp+rename in production), so a concurrent
+//     reader observes complete old or complete new bytes, never a torn write.
+//   - Freshness is re-verified from a re-read as late as the seam allows,
+//     immediately before the write call, under writeMu.
+//
+// It does NOT close the TOCTOU window for existing files: an external
+// modification landing after that final re-read but before the rename is still
+// overwritten. A content-hash guard cannot eliminate that residual without an
+// OS-level compare-and-swap; see ADR-010, "Residual risk".
 func (g *Guard) CommitWrite(path string, content []byte, perm fs.FileMode) error {
 	g.writeMu.Lock()
 	defer g.writeMu.Unlock()
 
-	if err := g.CheckWritable(path); err != nil {
-		return err
-	}
 	key, err := g.fsys.Canonical(path)
 	if err != nil {
 		return err
 	}
-	if err := g.fsys.WriteFile(path, content, perm); err != nil {
-		return err
+
+	// The freshness re-read happens here, immediately before the write call,
+	// so the unavoidable check-to-write gap is as small as the seam allows.
+	current, err := g.fsys.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		// Believed new: create exclusively, so a create that raced in after
+		// the read above fails closed instead of being clobbered.
+		if cerr := g.fsys.CreateExclusive(path, content, perm); cerr != nil {
+			if errors.Is(cerr, fs.ErrExist) {
+				return ErrConcurrentCreate
+			}
+			return cerr
+		}
+	case err != nil:
+		return err // fail closed: an unreadable file is never written
+	default:
+		g.mu.Lock()
+		observed, seen := g.reads[key]
+		g.mu.Unlock()
+		if !seen {
+			return ErrNotRead
+		}
+		if observed != hashBytes(current) {
+			return ErrStale
+		}
+		// Atomic replace: readers see old or new content, never torn. A
+		// modification landing between the re-read above and the rename inside
+		// WriteFileAtomic is still overwritten — the ADR-010 residual.
+		if werr := g.fsys.WriteFileAtomic(path, content, perm); werr != nil {
+			return werr
+		}
 	}
 
 	g.mu.Lock()
@@ -424,7 +483,64 @@ func (OSFilesystem) Canonical(path string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
-// WriteFile writes data to path on disk.
-func (OSFilesystem) WriteFile(path string, data []byte, perm fs.FileMode) error {
-	return os.WriteFile(path, data, perm)
+// CreateExclusive writes data to path with O_CREATE|O_EXCL semantics: it fails
+// with an error satisfying errors.Is(err, fs.ErrExist) if path already exists.
+// The exclusivity is enforced by the kernel at open time, so two processes
+// racing to create the same path cannot both succeed.
+func (OSFilesystem) CreateExclusive(path string, data []byte, perm fs.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(data)
+	cerr := f.Close()
+	if werr != nil {
+		return werr
+	}
+	return cerr
+}
+
+// WriteFileAtomic replaces path's content by staging a temp file in the same
+// directory (rename is only atomic within one filesystem) and renaming it over
+// path. A concurrent reader therefore observes either the old or the new
+// content in full, never a torn intermediate, and the path never transiently
+// disappears. An existing file keeps its current permission bits; a fresh file
+// gets perm. The staged file is fsynced before the rename so a crash cannot
+// publish an empty rename target. Trade-offs (inode change breaks hardlinks;
+// extra syscalls) are recorded in ADR-010.
+func (OSFilesystem) WriteFileAtomic(path string, data []byte, perm fs.FileMode) error {
+	mode := perm
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	err = fillAndClose(tmp, data, mode)
+	if err == nil {
+		err = os.Rename(name, path)
+	}
+	if err != nil {
+		os.Remove(name) // best-effort cleanup of the staged file
+		return err
+	}
+	return nil
+}
+
+// fillAndClose writes data to the staged temp file, applies mode, syncs, and
+// closes it, returning the first error encountered (Close always runs).
+func fillAndClose(f *os.File, data []byte, mode fs.FileMode) error {
+	_, err := f.Write(data)
+	if err == nil {
+		err = f.Chmod(mode)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }

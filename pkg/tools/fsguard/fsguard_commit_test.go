@@ -79,6 +79,90 @@ func TestCommitWrite_WriteError_PropagatesAndKeepsState(t *testing.T) {
 	assert.NoError(t, g.CheckWritable("/repo/main.go"))
 }
 
+// A racing external CREATE landing between CommitWrite's existence check and
+// its write must be refused with ErrConcurrentCreate, and the externally
+// created file must survive untouched — the write may not clobber it
+// (wk-2f8c87bf). The fake's writeHook plants the file in exactly that gap.
+func TestCommitWrite_NewFile_RacingExternalCreate_RefusedNotClobbered(t *testing.T) {
+	g, ff := newGuard(t)
+	ff.setWriteHook(t, func() { ff.putFile(t, "/repo/new.go", "external-content") })
+
+	err := g.CommitWrite("/repo/new.go", []byte("agent-content"), 0o644)
+
+	assert.ErrorIs(t, err, ErrConcurrentCreate)
+	b, rerr := ff.ReadFile("/repo/new.go")
+	require.NoError(t, rerr)
+	assert.Equal(t, "external-content", string(b), "the racing create must survive, not be clobbered")
+	assert.ErrorIs(t, g.CheckWritable("/repo/new.go"), ErrNotRead,
+		"the refused write must not record any observed state for the file")
+}
+
+// The concurrent-create refusal is model-facing text: static, path-free.
+func TestCommitWrite_ConcurrentCreate_ErrorTextStaticAndPathFree(t *testing.T) {
+	g, ff := newGuard(t)
+	const secret = "/repo/very-secret-marker-path.go"
+	ff.setWriteHook(t, func() { ff.putFile(t, secret, "x") })
+
+	err := g.CommitWrite(secret, []byte("y"), 0o644)
+	require.ErrorIs(t, err, ErrConcurrentCreate)
+	assert.NotContains(t, err.Error(), "secret")
+	assert.NotContains(t, err.Error(), secret)
+}
+
+// A non-ErrExist failure of the exclusive create (e.g. disk full) propagates
+// as itself, not misreported as a concurrent create or a guard verdict.
+func TestCommitWrite_NewFile_CreateError_Propagates(t *testing.T) {
+	g, ff := newGuard(t)
+	sentinel := errors.New("disk full")
+	ff.setWriteErr(t, "/repo/new.go", sentinel)
+
+	err := g.CommitWrite("/repo/new.go", []byte("x"), 0o644)
+	require.ErrorIs(t, err, sentinel)
+	assert.NotErrorIs(t, err, ErrConcurrentCreate)
+}
+
+// CommitWrite propagates canonicalization failures and unexpected read errors
+// (fail-closed), same as CheckWritable.
+func TestCommitWrite_CanonicalAndReadErrors_FailClosed(t *testing.T) {
+	t.Run("canonical error", func(t *testing.T) {
+		g, ff := newGuard(t)
+		sentinel := errors.New("cannot canonicalize")
+		ff.canonFn = func(string) (string, error) { return "", sentinel }
+		assert.ErrorIs(t, g.CommitWrite("/repo/x.go", []byte("a"), 0o644), sentinel)
+	})
+	t.Run("read error", func(t *testing.T) {
+		g, ff := newGuard(t)
+		ff.putFile(t, "/repo/x.go", "v1")
+		require.NoError(t, g.MarkRead("/repo/x.go", []byte("v1")))
+		sentinel := errors.New("permission denied")
+		ff.setReadErr(t, "/repo/x.go", sentinel)
+
+		err := g.CommitWrite("/repo/x.go", []byte("v2"), 0o644)
+		require.ErrorIs(t, err, sentinel)
+		assert.NotErrorIs(t, err, ErrNotRead)
+		assert.NotErrorIs(t, err, ErrStale)
+	})
+}
+
+// DOCUMENTED RESIDUAL (ADR-010): an external MODIFICATION of an existing file
+// that lands after CommitWrite's final freshness re-read but before the atomic
+// replace is still overwritten — the content-hash model cannot close this last
+// window without OS-level compare-and-swap. This test pins the residual as
+// executable documentation: if it ever starts failing, the window was closed
+// and ADR-010 must be updated alongside it.
+func TestCommitWrite_ExistingFile_RaceAfterFinalVerify_ResidualOverwrite(t *testing.T) {
+	g, ff := newGuard(t)
+	ff.putFile(t, "/repo/main.go", "v1")
+	require.NoError(t, g.MarkRead("/repo/main.go", []byte("v1")))
+	ff.setWriteHook(t, func() { ff.putFile(t, "/repo/main.go", "external-v2") })
+
+	require.NoError(t, g.CommitWrite("/repo/main.go", []byte("agent-v2"), 0o644))
+
+	b, _ := ff.ReadFile("/repo/main.go")
+	assert.Equal(t, "agent-v2", string(b),
+		"the residual window per ADR-010: a modify after the last re-read is overwritten")
+}
+
 // Concurrent commits must be race-free (run with -race).
 func TestCommitWrite_Concurrent_RaceFree(t *testing.T) {
 	g, _ := newGuard(t)
