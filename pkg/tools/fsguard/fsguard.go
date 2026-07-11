@@ -7,6 +7,12 @@
 // from a stale or hallucinated view of its contents, and detects the file being
 // changed out from under the agent between the read and the write.
 //
+// On top of freshness, the guard can optionally track WHICH lines of a file
+// were observed (MarkReadRange) and require an edit's target span to fall
+// within them (CheckEditable), so a partial read — a Read with offset/limit —
+// does not authorize rewriting lines it never surfaced. A plain MarkRead keeps
+// its meaning: whole file observed, any span editable. See ADR-009.
+//
 // Freshness is compared by content hash rather than mtime: mtime is
 // attacker-controllable (touch -t / os.Chtimes) and therefore not an integrity
 // signal, whereas a content hash detects any change regardless of timestamp.
@@ -22,6 +28,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -39,7 +46,31 @@ var (
 	// ErrStale means the file's on-disk content changed since it was read, so
 	// the agent's view of it is out of date.
 	ErrStale = errors.New("file has been modified since read; read it again before writing to it")
+
+	// ErrRegionNotRead means the file is fresh, but the edit targets lines that
+	// were never observed via a Read in this session (only part of the file was
+	// read), so editing there would rewrite unseen content.
+	ErrRegionNotRead = errors.New("edit targets lines that have not been read; read that region first before editing it")
+
+	// ErrInvalidRange means a supplied LineRange is malformed (Start < 1 or
+	// End < Start).
+	ErrInvalidRange = errors.New("invalid line range: start must be >= 1 and end must be >= start")
 )
+
+// LineRange is a closed, 1-based interval of lines: Start is the first line
+// observed and End the last, inclusive. Start must be >= 1 and End >= Start.
+//
+// Coverage is tracked in lines rather than bytes because that is the unit the
+// surrounding tools speak: a partial Read is expressed as a line offset/limit,
+// and an Edit targets a line span. See ADR-009 for the trade-off against byte
+// ranges.
+type LineRange struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+// valid reports whether r is a well-formed range.
+func (r LineRange) valid() bool { return r.Start >= 1 && r.End >= r.Start }
 
 // Filesystem is the seam through which a Guard observes file state. Production
 // wiring uses OSFilesystem; tests inject an in-memory fake.
@@ -73,11 +104,22 @@ type Guard struct {
 
 	mu    sync.Mutex
 	reads map[string]string // canonical path -> observed content hash
+
+	// ranges holds, for files observed only partially (MarkReadRange), the
+	// merged 1-based line ranges seen so far — sorted, disjoint, and
+	// non-adjacent. A path present in reads but ABSENT here was observed in
+	// full; that absence encoding is what keeps MarkRead's semantics and old
+	// snapshots unchanged. Guarded by mu, like reads.
+	ranges map[string][]LineRange
 }
 
 // New returns a Guard backed by fsys.
 func New(fsys Filesystem) *Guard {
-	return &Guard{fsys: fsys, reads: make(map[string]string)}
+	return &Guard{
+		fsys:   fsys,
+		reads:  make(map[string]string),
+		ranges: make(map[string][]LineRange),
+	}
 }
 
 // MarkRead records that content was the observed state of path (call this after
@@ -93,9 +135,128 @@ func (g *Guard) MarkWritten(path string, content []byte) error {
 	return g.observe(path, content)
 }
 
+// MarkReadRange records that content is the observed state of path, but that
+// only the given 1-based line ranges of it were actually surfaced (call this
+// after a partial Read, e.g. one with a line offset/limit). Ranges from
+// successive calls against unchanged content accumulate, with overlapping and
+// adjacent ranges merged; if the content hash differs from the previous
+// observation, previously recorded ranges described a different file body and
+// are discarded. Calling it with no ranges records freshness only. A malformed
+// range is rejected with ErrInvalidRange and nothing is recorded.
+//
+// The ranges are caller-asserted: the Guard does not verify them against
+// content's actual line count, the same trust it already extends to content
+// itself (see ADR-009).
+func (g *Guard) MarkReadRange(path string, content []byte, ranges ...LineRange) error {
+	for _, r := range ranges {
+		if !r.valid() {
+			return ErrInvalidRange
+		}
+	}
+	key, err := g.fsys.Canonical(path)
+	if err != nil {
+		return err
+	}
+	h := hashBytes(content)
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	prev, seen := g.reads[key]
+	existing, partial := g.ranges[key]
+	if seen && prev == h && !partial {
+		// Already observed in full and unchanged: a partial re-read adds no
+		// information and must not downgrade coverage.
+		return nil
+	}
+	if !seen || prev != h {
+		// First observation, or the content changed since the last one: any
+		// previously recorded ranges belong to a different body.
+		existing = nil
+	}
+	g.reads[key] = h
+	g.ranges[key] = mergeRanges(existing, ranges)
+	return nil
+}
+
+// CheckEditable reports whether the given line span of path may be edited now.
+// It first applies the same freshness check as CheckWritable (nil for a file
+// that does not exist yet; ErrNotRead / ErrStale / a propagated filesystem
+// error otherwise), then verifies coverage: the span must fall within the
+// union of the line ranges observed for the file. A file observed in full
+// (MarkRead, MarkWritten, or a CommitWrite) covers every span; a partially
+// observed file yields ErrRegionNotRead for a span not fully inside its
+// observed ranges. A malformed span is rejected with ErrInvalidRange.
+//
+// CheckWritable is unchanged and remains the whole-file-overwrite check;
+// CheckEditable is the stricter precondition for region edits.
+func (g *Guard) CheckEditable(path string, span LineRange) error {
+	if !span.valid() {
+		return ErrInvalidRange
+	}
+	key, err := g.fsys.Canonical(path)
+	if err != nil {
+		return err
+	}
+
+	current, err := g.fsys.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	currentHash := hashBytes(current)
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	observed, seen := g.reads[key]
+	switch {
+	case !seen:
+		return ErrNotRead
+	case observed != currentHash:
+		return ErrStale
+	}
+	rs, partial := g.ranges[key]
+	if !partial {
+		return nil // observed in full
+	}
+	// rs is sorted, disjoint, and non-adjacent, so a span covered by the union
+	// must sit entirely inside a single merged range.
+	for _, r := range rs {
+		if r.Start <= span.Start && span.End <= r.End {
+			return nil
+		}
+	}
+	return ErrRegionNotRead
+}
+
+// mergeRanges returns the union of the two range sets as a sorted, disjoint,
+// non-adjacent list (adjacent ranges like 1-10 and 11-20 combine to 1-20). It
+// builds a fresh slice and never mutates its inputs, so stored range slices
+// stay immutable once published.
+func mergeRanges(a, b []LineRange) []LineRange {
+	all := make([]LineRange, 0, len(a)+len(b))
+	all = append(all, a...)
+	all = append(all, b...)
+	sort.Slice(all, func(i, j int) bool { return all[i].Start < all[j].Start })
+
+	merged := make([]LineRange, 0, len(all))
+	for _, r := range all {
+		if n := len(merged); n > 0 && r.Start <= merged[n-1].End+1 {
+			if r.End > merged[n-1].End {
+				merged[n-1].End = r.End
+			}
+			continue
+		}
+		merged = append(merged, r)
+	}
+	return merged
+}
+
 // observe stores the content hash of path under its canonical key. MarkRead and
 // MarkWritten are the same operation from the Guard's perspective: both assert
-// "this is what the file contains as far as the agent knows".
+// "this is what the file contains as far as the agent knows". A full
+// observation supersedes any partial-range record for the file.
 func (g *Guard) observe(path string, content []byte) error {
 	key, err := g.fsys.Canonical(path)
 	if err != nil {
@@ -106,6 +267,7 @@ func (g *Guard) observe(path string, content []byte) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.reads[key] = h
+	delete(g.ranges, key) // whole file observed: absence in ranges = full coverage
 	return nil
 }
 
@@ -167,6 +329,7 @@ func (g *Guard) CommitWrite(path string, content []byte, perm fs.FileMode) error
 
 	g.mu.Lock()
 	g.reads[key] = hashBytes(content)
+	delete(g.ranges, key) // the full content was written, so it is fully observed
 	g.mu.Unlock()
 	return nil
 }
@@ -178,6 +341,12 @@ func (g *Guard) CommitWrite(path string, content []byte, perm fs.FileMode) error
 // carries no clock or timestamp, so it is stable across replays.
 type Snapshot struct {
 	Reads map[string]string `json:"reads"`
+
+	// Ranges holds, for files that were only partially observed, the merged
+	// line ranges seen so far. A path present in Reads but absent here was
+	// observed in full (the pre-range semantics), so snapshots taken before
+	// this field existed restore with their original meaning.
+	Ranges map[string][]LineRange `json:"ranges,omitempty"`
 }
 
 // Snapshot returns an independent copy of the Guard's current observed state.
@@ -189,17 +358,30 @@ func (g *Guard) Snapshot() Snapshot {
 	for k, v := range g.reads {
 		reads[k] = v
 	}
-	return Snapshot{Reads: reads}
+	var ranges map[string][]LineRange
+	if len(g.ranges) > 0 {
+		ranges = make(map[string][]LineRange, len(g.ranges))
+		for k, v := range g.ranges {
+			ranges[k] = append([]LineRange(nil), v...)
+		}
+	}
+	return Snapshot{Reads: reads, Ranges: ranges}
 }
 
 // Restore replaces the Guard's observed state with a deep copy of s. Any state
-// recorded before the call is discarded.
+// recorded before the call is discarded. A snapshot taken before range
+// tracking existed carries no Ranges, so every restored file counts as fully
+// observed — its original meaning.
 func (g *Guard) Restore(s Snapshot) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.reads = make(map[string]string, len(s.Reads))
 	for k, v := range s.Reads {
 		g.reads[k] = v
+	}
+	g.ranges = make(map[string][]LineRange, len(s.Ranges))
+	for k, v := range s.Ranges {
+		g.ranges[k] = append([]LineRange(nil), v...)
 	}
 }
 
