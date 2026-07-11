@@ -80,7 +80,8 @@ engine underneath is Temporal, not a bespoke scheduler. Target: phase 3
 
 ## PAT-008 — Generics function-tool with derived JSON schema
 
-`functiontool.New[TArgs, TResults](handler)` deriving the parameter schema
+`functiontool.New[TArgs, TResults]` taking a typed handler and deriving the
+parameter schema
 from Go types. Why: removes hand-written Parameters() maps (our tools.Params
 boilerplate), makes tool arg contracts compile-checked. Target: phase 3/4;
 independent of the safety work. MUST keep panic recovery inside the wrapper
