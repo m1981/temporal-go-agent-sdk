@@ -24,10 +24,10 @@ Five changes, one work item, sequenced so each lands independently:
    Replace the verbatim `fmt.Sprintf("%v", result)` path with a structured
    envelope (tool name, status, delimited content) built in ONE place in
    `internal/runtime/base`, consumed by both loops.
-2. **Static model-facing error text** (fixes tr-6cb4d1a2; PR-02). The model
+2. **Static model-facing error text** (fixes tr-466f3e3e; PR-02). The model
    sees a fixed corrective sentence per error class; the raw `err.Error()`
    moves to a harness-only field (logs/telemetry), never into message content.
-3. **Panic recovery + per-tool timeout** (fixes tr-09eeed62; AP-08). A
+3. **Panic recovery + per-tool timeout** (fixes tr-799b362d; AP-08). A
    `defer recover()` in the local tool-execution goroutine converting panics
    to the classified tool-error path (never forwarding stack traces to the
    model — the ADK@0c88126 mistake), plus a configurable per-tool deadline.
