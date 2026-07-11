@@ -40,7 +40,7 @@ appears.
 Tool results enter model contents as structured parts
 (FunctionResponse-style), not `fmt.Sprintf("%v", result)`. Why: this is the
 structural half of the AP-05 fix for tr-42e5b4c3/tr-6cb4d1a2 — typed
-delimitation plus static error text. Target: **phase 1 (wk-dcc7a92d)** — the
+delimitation plus static error text. Target: **phase 1 (wk-0eaee8d9)** — the
 single highest-leverage adoption. Note: ADK proves typing alone is
 insufficient (they still inject raw error strings and stack traces INSIDE the
 typed part); we MUST combine PAT-003 with PR-02 static errors.
@@ -51,7 +51,7 @@ typed part); we MUST combine PAT-003 with PR-02 static errors.
 Why: generalizes our SideEffect discipline beyond Temporal — the Local
 runtime and any event construction get deterministic, testable identity;
 directly relevant to fixing tr-166b071c once, in base, for both drivers.
-Target: phase 1–2 boundary (wk-dcc7a92d / wk-39850a5b).
+Target: phase 1–2 boundary (wk-0eaee8d9 / wk-39850a5b).
 
 ## PAT-005 — Event-log-derived HITL resume
 
@@ -68,7 +68,7 @@ Ordered, testable processors over a request struct (instructions → history →
 tools) instead of inline concatenation. Why: our BuildLLMRequest
 string-concatenates memory/retriever context into the system prompt; a
 processor pipeline gives each contribution a seam for the AP-05 envelope and
-for per-source trust labels. Target: phase 1 enabler (wk-dcc7a92d).
+for per-source trust labels. Target: phase 1 enabler (wk-0eaee8d9).
 
 ## PAT-007 — Pipeline-step API shape: iterator event spine + per-node caps
 

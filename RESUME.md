@@ -57,11 +57,11 @@ filed by me under T1 with peer attribution:
   (link→outside) is accepted and lands OUTSIDE root. Repro:
   `go test -tags escape_repro -run TestScopedWrite ./pkg/tools/file/`. READY
   now; fix before relying on pathscope for any sandboxing.
-- **wk-dcc7a92d** (ADR-011 phase 1 membrane). Spec:
-  `internal/runtime/docs/specs/membrane-hardening.md`. NOTE: currently HELD in
-  `truth ready` — two of its premises diverged then were corrected under new
-  ids (tr-466f3e3e, tr-799b362d, re-premised), but the diverged originals
-  still block (see field-feedback note below). Resolve before coding.
+- **wk-0eaee8d9** (ADR-011 phase 1 membrane). Spec:
+  `internal/runtime/docs/specs/membrane-hardening.md`. READY — re-filed on the
+  five LIVE premises (old wk-dcc7a92d closed as superseded; its two diverged
+  premises could not be detached). Practically gated on wk-20a409b1: fix the
+  guard escape BEFORE wiring the trio.
 - Sequence after: wk-39850a5b → wk-0bdbd4e4 → wk-7baee278 (rationale: ADR-011).
 
 ## Verification debt (independent verifier pass — 2026-07-12)
@@ -80,17 +80,17 @@ All 12 dispatched claims now carry a filed verdict (10 agree, 2 diverge).
 - **Pathscope escape now filed**: tr-8f969e5d (P0, verified) + wk-20a409b1
   (fix, READY). See Current focus.
 - FIELD-FEEDBACK for the ledger (see planning eval doc): a diverged premise
-  permanently HOLDs its work item even after the claim is corrected under a
-  new id — there is no premise-supersede/-detach verb (append-only + issue
-  first-wins). wk-dcc7a92d is stuck on tr-6cb4d1a2/tr-09eeed62 (diverged)
-  despite the corrections. Workaround options: re-file the work item fresh on
-  the corrected premises, or a template feature (premise-supersede).
+  permanently HOLDs its work item even after the claim is corrected under a new
+  id — no premise-detach verb exists. RESOLVED here by re-filing Phase 1 as
+  wk-0eaee8d9 on the live corrections and closing wk-dcc7a92d as superseded; the
+  limitation stands as real template feedback (a premise-supersede verb would
+  avoid the id churn).
 - Command per id, in a fresh session: `scripts/truth dispatch <id>`.
 
 ## Known repo oddities
 
-- `docs/reference/code-review.md` is a committed session transcript
-  (owner decision pending: keep, move to `docs/archive/`, or remove).
+- Session transcript archived to `docs/archive/session-transcript-2026-07.md`
+  (was `docs/reference/code-review.md`; archive = gate-exempt, non-maintained).
 - Template: truth-ledger v0.5.7 (copier ref `543d549`; tags upstream lag
   main — trust `.copier-answers.truth-ledger.yml`, not `git ls-remote`).
 - `jsonschema` is not installed (host Python 3.14 pip is broken); drift

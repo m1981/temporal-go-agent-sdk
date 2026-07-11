@@ -1,6 +1,6 @@
 # Membrane hardening — Phase 1 feature spec
 
-> Reader: the session implementing wk-dcc7a92d | Enables: starting implementation without re-deriving the design from ADR-011, the dossiers, or chat history | Update-trigger: a cited id changes status, wk-dcc7a92d closes, or ADR-011 phase 1 is re-scoped
+> Reader: the session implementing wk-0eaee8d9 | Enables: starting implementation without re-deriving the design from ADR-011, the dossiers, or chat history | Update-trigger: a cited id changes status, wk-0eaee8d9 closes, or ADR-011 phase 1 is re-scoped
 
 Facts are authoritative only as ledger ids; prose is courtesy. Judge with
 `bash scripts/spec-health.sh`. Run `scripts/truth impact <file>` before
@@ -9,8 +9,8 @@ your commit; that is expected and correct (re-dispatch after shipping).
 
 ## Work item
 
-- **wk-dcc7a92d** — Phase 1: membrane hardening. Premises: tr-42e5b4c3,
-  tr-6cb4d1a2, tr-09eeed62, tr-166b071c, tr-9737e935. Decision: ADR-011
+- **wk-0eaee8d9** — Phase 1: membrane hardening. Premises (live): tr-42e5b4c3,
+  tr-466f3e3e, tr-799b362d, tr-166b071c, tr-9737e935. Decision: ADR-011
   (phase 1). Design sources: PAT-003, PAT-004, PAT-006
   (`docs/evaluations/patterns-to-adopt.md`); violations being fixed: AP-05,
   AP-04, AP-08 (`docs/design-review-checklist.md`).
