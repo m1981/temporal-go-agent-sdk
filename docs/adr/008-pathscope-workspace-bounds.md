@@ -1,8 +1,15 @@
 # ADR-008: Workspace path-scoping for file tools (pathscope)
 
-> Status: Accepted
+> Status: Accepted — with a KNOWN DEFECT (2026-07-12)
 > Date: 2026-07-10
 > Supersedes: —
+
+> **KNOWN DEFECT (2026-07-12):** the Consequences/Context claim that pathscope
+> "catches … symlinks inside the root pointing outside it" is FALSIFIED. A raw
+> `<root>/link/../x` path (link→outside) is cleaned lexically by Check but
+> written on the raw path by the OS, escaping root. Tracked as claim
+> tr-8f969e5d (+ write-side tr-3ef6f8ff); fix wk-20a409b1. This banner is the
+> one sanctioned amend (ADR_AMEND); the decision itself is not being revised.
 
 ## Context
 
