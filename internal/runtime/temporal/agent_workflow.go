@@ -509,7 +509,13 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 
 	for iter := input.State.Iteration; iter < maxIter; iter++ {
 
-		messageID := uuid.New().String()
+		// AP-04: uuid.New is non-deterministic and must be wrapped for replay safety.
+		var messageID string
+		if err := workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
+			return uuid.New().String()
+		}).Get(&messageID); err != nil {
+			return nil, err
+		}
 
 		llmInput := AgentLLMInput{
 			AgentName:        agentName,
@@ -669,9 +675,10 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 							"toolName", tc.ToolName,
 							"toolCallID", tc.ToolCallID,
 							"error", err)
+						// Raw error is harness-only (log above); the model sees static text (PR-02).
 						toolResults[i] = agentToolResult{
-							message: base.BuildToolResultMessage(tc.ToolCallID, tc.ToolName, "Tool execution failed: "+err.Error()),
-							failed: true,
+							message: base.BuildToolErrorResultMessage(tc.ToolCallID, tc.ToolName, err),
+							failed:  true,
 						}
 					} else {
 						logger.Debug("workflow: parallel tool future collected (ok)",
@@ -713,9 +720,10 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 							"toolName", tc.ToolName,
 							"toolCallID", tc.ToolCallID,
 							"error", runErr)
+						// Raw error is harness-only (log above); the model sees static text (PR-02).
 						toolResults[i] = agentToolResult{
-							message: base.BuildToolResultMessage(tc.ToolCallID, tc.ToolName, "Tool execution failed: "+runErr.Error()),
-							failed: true,
+							message: base.BuildToolErrorResultMessage(tc.ToolCallID, tc.ToolName, runErr),
+							failed:  true,
 						}
 						continue
 					}
@@ -1017,10 +1025,17 @@ func (rt *TemporalRuntime) executeAgentToolCall(input agentToolCallInput, tc Too
 			}
 			errExec := workflow.ExecuteActivity(input.execCtx, rt.AgentToolExecuteActivity, execInput).Get(input.execCtx, &result)
 			if errExec != nil {
-				content = "Tool execution failed: " + errExec.Error()
+				// Raw error is harness-only (log); the model sees static text (PR-02).
+				logger.Warn("workflow: tool execution failed",
+					"scope", "workflow",
+					"tool", tc.ToolName,
+					"toolCallID", tc.ToolCallID,
+					"error", errExec)
+				content = base.ToolFailureContent(tc.ToolName, errExec)
 				failed = true
 			} else {
-				content = result
+				// AP-05: untrusted tool output is framed as data via the typed envelope.
+				content = base.RenderToolResultEnvelope(tc.ToolName, base.ToolResultStatusOK, result)
 			}
 		}
 	case types.ApprovalStatusRejected:

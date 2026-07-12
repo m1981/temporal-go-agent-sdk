@@ -410,12 +410,13 @@ func (rt *LocalRuntime) executeToolsParallel(
 			defer wg.Done()
 			result, err := rt.executeSingleTool(ctx, input, messageID, iteration, tc, emit)
 			if err != nil {
+				// Raw error is harness-only (log); the model sees static text (PR-02).
 				rt.logger.Info(ctx, "local: parallel tool failed",
 					slog.String("scope", "loop"),
 					slog.Int("toolIndex", idx),
 					slog.String("toolName", tc.ToolName),
 					slog.Any("error", err))
-				result.message = base.BuildToolResultMessage(tc.ToolCallID, tc.ToolName, "Tool execution failed: "+err.Error())
+				result.message = base.BuildToolErrorResultMessage(tc.ToolCallID, tc.ToolName, err)
 				result.failed = true
 			}
 			results[idx] = result
@@ -444,13 +445,14 @@ func (rt *LocalRuntime) executeToolsSequential(
 	for idx, tc := range toolCalls {
 		result, err := rt.executeSingleTool(ctx, input, messageID, iteration, tc, emit)
 		if err != nil {
+			// Raw error is harness-only (log); the model sees static text (PR-02).
 			rt.logger.Info(ctx, "local: sequential tool failed",
 				slog.String("scope", "loop"),
 				slog.Int("toolIndex", idx),
 				slog.String("toolName", tc.ToolName),
 				slog.Any("error", err))
 
-			result.message = base.BuildToolResultMessage(tc.ToolCallID, tc.ToolName, "Tool execution failed: "+err.Error())
+			result.message = base.BuildToolErrorResultMessage(tc.ToolCallID, tc.ToolName, err)
 			result.failed = true
 		}
 		results[idx] = result
@@ -642,7 +644,9 @@ func (rt *LocalRuntime) executeSingleTool(
 				slog.String("scope", "loop"),
 				slog.String("tool", tc.ToolName),
 				slog.String("toolCallID", tc.ToolCallID))
-			result, execErr := rt.ExecuteTool(ctx, base.ExecuteToolInput{
+			// ExecuteToolGuarded adds panic recovery and the per-tool deadline (AP-08):
+			// a panicking or hung tool becomes a classified error, never a process crash.
+			result, execErr := rt.ExecuteToolGuarded(ctx, base.ExecuteToolInput{
 				Logger:     log,
 				Tools:      tools,
 				ToolName:   tc.ToolName,
@@ -650,9 +654,10 @@ func (rt *LocalRuntime) executeSingleTool(
 				ToolCallID: tc.ToolCallID,
 				RunID:      input.RunID,
 				Iteration:  iteration,
-			}, input.MemoryScope)
+			}, input.MemoryScope, rt.AgentConfig.Limits.ToolExecutionTimeout)
 			if execErr != nil {
 				// Classify error as fatal (infrastructure) or non-fatal (business).
+				// The raw error is harness-only (log); the model sees static text (PR-02).
 				toolErr := base.ClassifyToolError(tc.ToolName, tc.ToolCallID, execErr)
 				if toolErr.IsFatal {
 					log.Error(ctx, "local: tool execution failed (fatal)",
@@ -667,10 +672,11 @@ func (rt *LocalRuntime) executeSingleTool(
 						slog.String("toolCallID", tc.ToolCallID),
 						slog.Any("error", execErr))
 				}
-				content = "Tool execution failed: " + execErr.Error()
+				content = base.ToolFailureContent(tc.ToolName, execErr)
 				failed = true
 			} else {
-				content = result
+				// AP-05: untrusted tool output is framed as data via the typed envelope.
+				content = base.RenderToolResultEnvelope(tc.ToolName, base.ToolResultStatusOK, result)
 			}
 		}
 	case types.ApprovalStatusRejected:

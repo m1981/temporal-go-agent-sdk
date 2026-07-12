@@ -145,6 +145,10 @@ type AgentLimits struct {
 	// MaxToolOutputTokens limits the size of tool output fed back to the LLM.
 	// 0 means no limit. When exceeded, tool output is truncated.
 	MaxToolOutputTokens int
+	// ToolExecutionTimeout bounds a single tool execution on the in-process (local)
+	// runtime. 0 means use base.DefaultToolExecutionTimeout. The Temporal runtime bounds
+	// tool execution with activity StartToClose timeouts instead.
+	ToolExecutionTimeout time.Duration
 }
 
 // ExecuteRequest carries one execution request from Agent to Runtime.

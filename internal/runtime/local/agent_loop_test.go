@@ -559,8 +559,8 @@ func TestExecuteToolsParallel_AllSucceed(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
 	// Order must match submission order (parallel but results are indexed).
-	require.Equal(t, "r1", msgs[0].message.Content)
-	require.Equal(t, "r2", msgs[1].message.Content)
+	require.Equal(t, base.RenderToolResultEnvelope("t1", base.ToolResultStatusOK, "r1"), msgs[0].message.Content)
+	require.Equal(t, base.RenderToolResultEnvelope("t2", base.ToolResultStatusOK, "r2"), msgs[1].message.Content)
 }
 
 func TestExecuteToolsParallel_ToolErrorInMessage(t *testing.T) {
@@ -572,7 +572,9 @@ func TestExecuteToolsParallel_ToolErrorInMessage(t *testing.T) {
 	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "msg", 0, calls, noopEmit)
 	require.NoError(t, err) // parallel swallows into message
 	require.Len(t, msgs, 1)
-	require.Contains(t, msgs[0].message.Content, "boom")
+	// PR-02: static corrective text; the raw error stays out of model-facing content.
+	require.Contains(t, msgs[0].message.Content, base.MsgToolFailed)
+	require.NotContains(t, msgs[0].message.Content, "boom")
 	require.True(t, msgs[0].failed)
 }
 
@@ -592,7 +594,13 @@ func TestExecuteToolsParallel_ResultsOrderPreserved(t *testing.T) {
 	}
 	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "m", 0, calls, noopEmit)
 	require.NoError(t, err)
-	require.Equal(t, []string{"A", "B", "C"}, []string{msgs[0].message.Content, msgs[1].message.Content, msgs[2].message.Content})
+	require.Equal(t,
+		[]string{
+			base.RenderToolResultEnvelope("a", base.ToolResultStatusOK, "A"),
+			base.RenderToolResultEnvelope("b", base.ToolResultStatusOK, "B"),
+			base.RenderToolResultEnvelope("c", base.ToolResultStatusOK, "C"),
+		},
+		[]string{msgs[0].message.Content, msgs[1].message.Content, msgs[2].message.Content})
 }
 
 // ---------------------------------------------------------------------------
@@ -611,8 +619,8 @@ func TestExecuteToolsSequential_AllSucceed(t *testing.T) {
 	msgs, err := rt.executeToolsSequential(context.Background(), loopToolsInput(tools), "msg", 0, calls, noopEmit)
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
-	require.Equal(t, "v1", msgs[0].message.Content)
-	require.Equal(t, "v2", msgs[1].message.Content)
+	require.Equal(t, base.RenderToolResultEnvelope("s1", base.ToolResultStatusOK, "v1"), msgs[0].message.Content)
+	require.Equal(t, base.RenderToolResultEnvelope("s2", base.ToolResultStatusOK, "v2"), msgs[1].message.Content)
 }
 
 func TestExecuteToolsSequential_HardErrorOnContextCancel(t *testing.T) {
@@ -641,7 +649,7 @@ func TestExecuteSingleTool_Approved(t *testing.T) {
 		testToolCall("c1", "my-tool"), emit)
 
 	require.NoError(t, err)
-	require.Equal(t, "hello", msg.message.Content)
+	require.Equal(t, base.RenderToolResultEnvelope("my-tool", base.ToolResultStatusOK, "hello"), msg.message.Content)
 	require.Equal(t, interfaces.MessageRoleTool, msg.message.Role)
 	require.Equal(t, "my-tool", msg.message.ToolName)
 
@@ -658,7 +666,9 @@ func TestExecuteSingleTool_ToolExecError(t *testing.T) {
 	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg", 0,
 		testToolCall("c1", "boom"), noopEmit)
 	require.NoError(t, err) // tool errors become a content message, not a hard error
-	require.Contains(t, msg.message.Content, "exec failed")
+	// PR-02: static corrective text; the raw error stays out of model-facing content.
+	require.Contains(t, msg.message.Content, base.MsgToolFailed)
+	require.NotContains(t, msg.message.Content, "exec failed")
 	require.True(t, msg.failed)
 }
 
@@ -728,7 +738,7 @@ func TestExecuteSingleTool_ApprovalHandlerApproves(t *testing.T) {
 		AgentLoopInput{ApprovalHandler: handler, Tools: tools}, "msg", 0,
 		testToolCallNeedsApproval("c1", "guarded"), noopEmit)
 	require.NoError(t, err)
-	require.Equal(t, "ok", msg.message.Content)
+	require.Equal(t, base.RenderToolResultEnvelope("guarded", base.ToolResultStatusOK, "ok"), msg.message.Content)
 }
 
 func TestExecuteSingleTool_ApprovalHandlerRejects(t *testing.T) {
@@ -809,7 +819,7 @@ func TestExecuteSingleTool_StreamingApproveUnblocks(t *testing.T) {
 
 	<-done
 	require.NoError(t, resultErr)
-	require.Equal(t, "stream-ok", result.message.Content)
+	require.Equal(t, base.RenderToolResultEnvelope("guarded", base.ToolResultStatusOK, "stream-ok"), result.message.Content)
 }
 
 func TestExecuteSingleTool_ApprovalContextCancel(t *testing.T) {

@@ -1,9 +1,53 @@
 package base
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// Model-facing static tool-failure texts (PR-02: errors are instructions).
+// These fixed corrective sentences are the ONLY strings the model may see for a failed
+// tool call. The raw err.Error() rides harness-only channels (logs, telemetry, spans)
+// and must never be interpolated into message content (AP-05).
+const (
+	// MsgToolFailed is the generic/business-error class.
+	MsgToolFailed = "The tool failed to execute; check the arguments and try again."
+	// MsgToolUnavailable is the infrastructure-error class (network, upstream outage).
+	MsgToolUnavailable = "The tool could not be executed because of a temporary system problem; try again, or continue without this tool."
+	// MsgToolTimedOut is the deadline class.
+	MsgToolTimedOut = "The tool did not finish within its execution time limit; try again, narrowing the request if possible."
+	// MsgToolPanicked is the internal-crash class. Panic values and stack traces are
+	// harness-only (never forwarded to the model).
+	MsgToolPanicked = "The tool encountered an internal error and could not complete; do not retry with the same arguments."
+)
+
+// ErrToolPanicked is the sentinel wrapped when a recovered tool panic is converted to an
+// error. The panic value and stack trace are intentionally NOT carried on this error.
+var ErrToolPanicked = errors.New("tool execution panicked")
+
+// ModelFacingToolErrorText maps a tool-execution error to the static corrective sentence
+// for its class. It classifies by sentinel first and falls back to message patterns so it
+// also works for errors that crossed an activity boundary as strings.
+func ModelFacingToolErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case errors.Is(err, ErrToolPanicked) || strings.Contains(msg, ErrToolPanicked.Error()):
+		return MsgToolPanicked
+	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(msg, "context deadline exceeded"):
+		return MsgToolTimedOut
+	case isInfrastructureError(msg):
+		return MsgToolUnavailable
+	case strings.Contains(msg, "timeout") || strings.Contains(msg, "timed out"):
+		return MsgToolTimedOut
+	default:
+		return MsgToolFailed
+	}
+}
 
 // ToolExecutionError represents an error that occurred during tool execution.
 // It distinguishes between infrastructure failures (fatal) and business errors (non-fatal).

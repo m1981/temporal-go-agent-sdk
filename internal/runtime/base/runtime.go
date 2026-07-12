@@ -453,7 +453,9 @@ func (rt *Runtime) executeTool(ctx context.Context, input ExecuteToolInput) (str
 		var result any
 		result, execErr = tool.Execute(ctx, args)
 		if execErr == nil {
-			content = fmt.Sprintf("%v", result)
+			// AP-05: typed conversion; the loops frame this via the tool-result envelope
+			// (tool_envelope.go) before it becomes model-facing message content.
+			content = ToolResultContent(result)
 		}
 		if runHooks {
 			var err error
