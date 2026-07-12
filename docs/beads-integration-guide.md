@@ -123,13 +123,23 @@ bd update bd-a1b2 --claim
 scripts/truth list --live
 
 # when YOU verify something with a command:
-scripts/truth claim "auth middleware rejects expired tokens" \
-  --class VERIFIED --evidence-cmd "pytest tests/auth -k expired -q" \
-  --paths "src/auth/**" --tier P1
+scripts/truth claim "expired-token rejection is covered by tests in tests/auth" \
+  --class VERIFIED --evidence-cmd "grep -rln expired tests/auth" \
+  --paths "src/auth/**,tests/auth/**" --tier P1
 
 # reasoned, not directly run:  --class INFERRED --basis "…"
 # just flagging for later:      --class UNVERIFIED
 ```
+
+Two intake gates worth knowing before your first claim: the evidence
+command is screened against `.truth/evidence-allow` (ADR-009) — it will
+re-execute later inside a verifier session, so only read-only programs
+pass, and test runners like `pytest` are deliberately not allowlisted
+(they execute repository code; add one only as a conscious, committed
+policy decision). And a universally quantified claim text ("no … anywhere",
+"only", "the repo") over a scoped evidence command is refused unless you
+state why the scope covers the quantifier with
+`--scope-ok "<one sentence>"` (ADR-007).
 
 **Step 4 — Link facts your work depends on** so future work is protected:
 
@@ -151,13 +161,13 @@ bd close bd-a1b2 "expired-token rejection verified and covered by tests"
 scripts/truth verdict tr-1234abcd --recheck
 ```
 
-Recheck semantics (TL-4): the **negative** outcomes are filed automatically because they are mechanical facts (hash mismatch → `diverge`; command not found → `cannot_verify`) — do not file a duplicate. A **matching** hash is only *reported*, never filed: it proves the command still produces that output, not that the claim's text is a sound interpretation of it. After you have independently confirmed the text, file your judgment once (this also advances the claim's anchor so it stays live):
+Recheck semantics (TL-4): the **negative** outcomes are filed automatically because they are mechanical facts (hash mismatch → `diverge`; command not found → `cannot_verify`) — do not file a duplicate. One more branch (ADR-009): a stored command that fails the evidence screen at recheck time — filed with `--evidence-unsafe-ok`, or the allowlist tightened since filing — is **refused, never executed**; verification of that claim is manual. A **matching** hash is only *reported*, never filed: it proves the command still produces that output, not that the claim's text is a sound interpretation of it. After you have independently confirmed the text, file your judgment once (this also advances the claim's anchor so it stays live):
 
 ```bash
 scripts/truth verdict tr-1234abcd agree --basis "re-ran the auth suite at HEAD, still passing"
 ```
 
-Retraction (killing a claim permanently) is a **human** action and requires `TRUTH_HUMAN=1`; as an agent, if you believe a claim should die, file `diverge` with your reasoning and let the human queue decide.
+Retraction (killing a claim permanently) is a **human** action: it requires `TRUTH_HUMAN=1` **plus** an interactive typed-id confirmation at a real terminal (or `TRUTH_HUMAN_ACK=<exact-id>` for headless human use) — `TRUTH_HUMAN=1` alone is refused (ADR-011). As an agent, if you believe a claim should die, file `diverge` with your reasoning and let the human queue decide.
 
 ---
 

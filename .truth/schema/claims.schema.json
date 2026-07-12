@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "truth-ledger-record.v0.5",
+  "$id": "truth-ledger-record.v0.6",
   "title": "Truth ledger record",
   "description": "One line of .truth/claims.jsonl. The ledger is append-only and event-sourced: status is never stored, only derived by folding records in (ts, id) order. v0.5 adds the ADR-002 work kernel kinds: `issue` (wk- envelope id) and `issue_event`. This schema is the durable contract; scripts/truth validate implements a stdlib mirror of it.",
   "type": "object",
@@ -96,10 +96,16 @@
                 "type": [
                   "string",
                   "null"
-                ]
+                ],
+                "minLength": 1
               },
               "basis": {
                 "type": "string"
+              },
+              "scope_basis": {
+                "type": "string",
+                "minLength": 1,
+                "description": "ADR-007: the author's stated reason a scoped evidence command covers a universally quantified claim text -- attackable by verifiers"
               },
               "evidence": {
                 "type": "object",
@@ -118,6 +124,10 @@
                   },
                   "returncode": {
                     "type": "integer"
+                  },
+                  "screened": {
+                    "type": "boolean",
+                    "description": "ADR-009: false = filed with --evidence-unsafe-ok; recheck refuses to execute the command"
                   }
                 }
               }
@@ -173,7 +183,12 @@
                 "then": {
                   "required": [
                     "basis"
-                  ]
+                  ],
+                  "properties": {
+                    "basis": {
+                      "minLength": 1
+                    }
+                  }
                 }
               }
             ]
@@ -213,6 +228,12 @@
               "basis": {
                 "type": "string",
                 "minLength": 1
+              },
+              "subtype": {
+                "enum": [
+                  "mechanical"
+                ],
+                "description": "ADR-012: annotates a diverge -- the measuring recipe changed, not necessarily the fact; fold and status unchanged"
               },
               "anchor_commit": {
                 "type": "string",

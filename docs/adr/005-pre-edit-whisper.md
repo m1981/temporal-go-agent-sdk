@@ -13,6 +13,20 @@ reports, injection-asserted), W2 (unwatched path silent — the fatigue
 budget as a property), W3 (premised work predicted HELD), W4 (unreadable
 ledger degrades visibly); the deny-stage check is consumer policy and
 lives with the hook, outside the template canary.
+Amended by: note (2026-07-12) — first trial evidence landed
+(2026-07-11 cross-model runs; scored record in trial-prompts/RUNBOOK.md
+with raw event streams alongside): the behavior-change half of the gate
+is met on two model tiers (Fable and Sonnet both surfaced or acted on
+the prediction unprompted); the deny stage held mechanically on every
+Claude tier; and the hook pattern proved harness-portable — a pi
+extension (.pi/extensions/truth-whisper.ts, same deny list, same
+matcher, same metric file) blocked the exact edit that an unarmed,
+norms-informed external agent had made the day before. The gate stays
+open on the fatigue half: whisper-count-per-session evidence from
+ordinary work sessions (.git/truth-whisper.seen) is still accumulating.
+Trial also surfaced, unfixed: the deny reason's amend-flow hint reads
+as a bypass ritual to weaker models, and the consumer hook misbehaves
+in git worktrees.
 Originally: Proposed (2026-07-09; adoption gated on earning its keep in
 the pilot first, per the growth-gate discipline).
 Date: 2026-07-09

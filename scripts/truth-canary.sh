@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# truth-canary.sh v0.5.7 -- seeded-fault acceptance suite (seeded faults + TL hardening + adapter seam + bd normalization + ADR-002 work kernel + ADR-006 issue-fold hardening + INV-M dead-tripwire intake checks + ADR-005 impact verb + spec-health/doc-health incl. degradation paths).
+# truth-canary.sh v0.6.2 -- seeded-fault acceptance suite (seeded faults + TL hardening + adapter seam + bd normalization + ADR-002 work kernel + ADR-006 issue-fold hardening + INV-M dead-tripwire intake checks + ADR-005 impact verb + spec-health/doc-health incl. degradation paths + v0.6 solo-regime hardening: ADR-007 Q-faults, ADR-008 B-faults, ADR-009 E-faults, ADR-010 V-faults, ADR-011 H-faults, ADR-012 M1 + v0.6.2 review-finding faults: F1 arg-deny E5, F2 ts-evasion B3/B4, F3 scope-signal Q5/Q6).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PASS=0; FAIL=0
@@ -19,6 +19,7 @@ mkrepo() {
   mkdir -p scripts .truth prompts
   touch .truth/claims.jsonl
   cp "$HERE/truth" scripts/truth
+  cp "$HERE/../.truth/evidence-allow" .truth/evidence-allow
   cp "$HERE/check-truth.sh" scripts/check-truth.sh
   cp "$HERE/spec-health.sh" scripts/spec-health.sh
   cp "$HERE/doc-health.sh" scripts/doc-health.sh
@@ -72,7 +73,8 @@ git config --unset core.hooksPath
 say "FAULT B (INV-C): commit touching evidence paths must mark the claim stale"
 CID_B=$($T claim "watched.txt says hello" --class VERIFIED \
         --evidence-cmd "cat watched.txt" --paths "watched.txt" --tier P0)
-$T verdict "$CID_B" agree --basis "canary: verified at filing" >/dev/null
+# ADR-010: agree verdicts come from a verifier session, never the author's
+TRUTH_SESSION=s-canary-verifier $T verdict "$CID_B" agree --basis "canary: verified at filing" >/dev/null
 git add .truth/claims.jsonl && git commit -qm "canary: claim B" --no-verify
 echo "changed" >> watched.txt
 git add watched.txt && git commit -qm "canary: mutate evidence" --no-verify
@@ -153,6 +155,108 @@ else
   ok "intake refused nondeterministic evidence"
 fi
 
+say "FAULT Q1 (ADR-007): universal claim text over a scoped command must be refused"
+if $T claim "no occurrences remain anywhere in the codebase" --class VERIFIED \
+     --evidence-cmd "grep -rc hello --include=watched.txt ." --paths "watched.txt" \
+     --tier P1 2>/dev/null; then
+  miss "intake accepted a universal quantifier over an --include-scoped command"
+else
+  ok "quantifier-scope mismatch refused (the pilot's dominant failure shape)"
+fi
+say "FAULT Q2 (ADR-007): --scope-ok with a sentence must file and store scope_basis"
+if CID_Q2=$($T claim "no occurrences remain anywhere in the codebase" --class VERIFIED \
+     --evidence-cmd "grep -rc hello --include=watched.txt ." --paths "watched.txt" \
+     --tier P1 --scope-ok "the quantifier is deliberately checked via the include filter" 2>/dev/null) \
+   && tail -1 .truth/claims.jsonl | grep -q '"scope_basis"'; then
+  ok "override filed with an auditable scope_basis ($CID_Q2)"
+else
+  miss "--scope-ok override failed or scope_basis absent from the record"
+fi
+say "FAULT Q3 (ADR-007): scoped text with no quantifier must pass silently"
+if $T claim "watched.txt mentions hello at least once" --class VERIFIED \
+     --evidence-cmd "grep -c hello --include=watched.txt -r ." --paths "watched.txt" \
+     --tier P2 --duplicate-ok >/dev/null 2>&1; then
+  ok "non-universal claim over a scoped command passed"
+else
+  miss "gate misfired on a claim with no universal quantifier"
+fi
+say "FAULT Q4 (ADR-007): universal text over an unscoped command must pass silently"
+if $T claim "watched.txt never went missing" --class VERIFIED \
+     --evidence-cmd "cat watched.txt" --paths "watched.txt" \
+     --tier P2 --duplicate-ok >/dev/null 2>&1; then
+  ok "universal claim over an unscoped command passed (no S signal)"
+else
+  miss "gate misfired with no scoping signal in the command"
+fi
+say "FAULT Q5 (ADR-007, F3): a ripgrep -t type filter is a scope signal (no slash)"
+if $T claim "no occurrences remain anywhere in the codebase" --class VERIFIED \
+     --evidence-cmd "grep -t txt -rc hello ." --paths "watched.txt" \
+     --tier P1 2>/dev/null; then
+  miss "intake accepted a universal quantifier over a -t-scoped command (F3 evasion)"
+else
+  ok "-t type-filter scope signal caught under a universal quantifier"
+fi
+say "FAULT Q6 (ADR-007, F3): a glob-metacharacter positional is a scope signal"
+if $T claim "X appears everywhere in the code" --class VERIFIED \
+     --evidence-cmd "grep -c hello watched.*" --paths "watched.txt" \
+     --tier P1 2>/dev/null; then
+  miss "intake accepted a universal quantifier over a glob-scoped command (F3 evasion)"
+else
+  ok "glob-metacharacter positional scope signal caught under a universal quantifier"
+fi
+
+say "FAULT E1 (ADR-009): a non-allowlisted program in the evidence command must be refused"
+if $T claim "the network is reachable" --class VERIFIED \
+     --evidence-cmd "curl -s https://example.com" --ttl-days 7 --tier P1 2>/dev/null; then
+  miss "intake accepted an unscreened program (deferred execution channel open)"
+else
+  ok "unlisted program refused at intake"
+fi
+say "FAULT E2 (ADR-009): a pipeline of allowlisted programs must pass"
+if CID_E2=$($T claim "watched.txt is a multi-word file" --class VERIFIED \
+     --evidence-cmd "cat watched.txt | wc -w" --paths "watched.txt" \
+     --tier P2 --duplicate-ok 2>/dev/null); then
+  ok "allowlisted pipeline accepted ($CID_E2)"
+else
+  miss "screen wrongly refused a read-only allowlisted pipeline"
+fi
+say "FAULT E3 (ADR-009): recheck must refuse to execute an unscreened command"
+CID_E3=$($T claim "unsafe evidence probe" --class VERIFIED \
+     --evidence-cmd "python3 -c 'print(1)'" --paths "watched.txt" \
+     --tier P2 --evidence-unsafe-ok --duplicate-ok 2>/dev/null)
+N_E3=$(grep -c "" .truth/claims.jsonl)
+if [ -z "$CID_E3" ]; then
+  miss "fault injection failed: --evidence-unsafe-ok claim was never filed"
+elif $T verdict "$CID_E3" --recheck >/dev/null 2>&1; then
+  miss "recheck EXECUTED an unscreened evidence command (the ADR-009 channel)"
+else
+  N_E3_AFTER=$(grep -c "" .truth/claims.jsonl)
+  if [ "$N_E3_AFTER" -eq "$N_E3" ]; then
+    ok "recheck declined the unscreened command and filed nothing"
+  else
+    miss "recheck declined but still filed $((N_E3_AFTER-N_E3)) record(s)"
+  fi
+fi
+say "FAULT E4 (ADR-009): a missing allowlist must fail VERIFIED intake closed"
+mv .truth/evidence-allow evidence-allow.e4.bak
+if $T claim "screen machinery absent" --class VERIFIED \
+     --evidence-cmd "cat watched.txt" --paths "watched.txt" \
+     --tier P2 --duplicate-ok >/dev/null 2>&1; then
+  miss "VERIFIED intake proceeded with no allowlist (screen failed open)"
+else
+  ok "missing allowlist failed closed with guidance"
+fi
+mv evidence-allow.e4.bak .truth/evidence-allow
+say "FAULT E5 (ADR-009, F1): an allowlisted program's exec/write flag must be refused"
+echo "sort" >> .truth/evidence-allow  # ensure the program is allowlisted
+if $T claim "the log is sorted into place" --class VERIFIED \
+     --evidence-cmd "sort -o /tmp/pwn watched.txt" --paths "watched.txt" \
+     --tier P2 --duplicate-ok >/dev/null 2>&1; then
+  miss "screen accepted 'sort -o' -- an allowlisted program's file-write flag (F1 channel)"
+else
+  ok "allowlisted program's exec/write flag refused (sort -o)"
+fi
+
 say "FAULT T (INV-M): a dead evidence-path tripwire must be refused at intake"
 if $T claim "a and watched are fine" --class VERIFIED \
      --evidence-cmd "cat watched.txt" --paths "watched.txt fabricated.txt" \
@@ -183,7 +287,8 @@ fi
 
 say "FAULT H (G12): a verdict after retraction must not resurrect the claim"
 CID_H=$($T claim "this claim is simply wrong" --tier P2)
-TRUTH_HUMAN=1 $T verdict "$CID_H" retracted --basis "human: factually wrong, tombstoned" >/dev/null
+# ADR-011: headless human retraction acknowledges the exact id
+TRUTH_HUMAN=1 TRUTH_HUMAN_ACK="$CID_H" $T verdict "$CID_H" retracted --basis "human: factually wrong, tombstoned" >/dev/null
 if $T verdict "$CID_H" agree --basis "resurrection attempt" >/dev/null 2>&1; then
   miss "tool accepted a verdict on a retracted claim"
 else
@@ -220,7 +325,7 @@ EOF
 chmod +x bd
 CID_L=$($T claim "watched.txt now says hello changed" --class VERIFIED \
         --evidence-cmd "cat watched.txt" --paths "watched.txt" --tier P1 --duplicate-ok)
-$T verdict "$CID_L" agree --basis "canary: verified at filing" >/dev/null
+TRUTH_SESSION=s-canary-verifier $T verdict "$CID_L" agree --basis "canary: verified at filing" >/dev/null
 $T premise bd-x1 "$CID_B" >/dev/null
 $T premise bd-x2 "$CID_L" >/dev/null
 READY_OUT=$(PATH="$PWD:$PATH" $T ready)
@@ -293,6 +398,77 @@ else
   miss "duplicate-id append resurrected retracted $CID_H"
 fi
 
+say "FAULT B1 (ADR-008): a BACKDATED duplicate-id append must fail validate (commit gate blocks)"
+cp .truth/claims.jsonl claims.b1.bak
+python3 - "$CID_H" <<'PYEOF'
+import json, sys
+rec={"id":sys.argv[1],"kind":"claim","actor":"agent-x","session":"s-evil",
+     "ts":"2000-01-01T00:00:00+00:00",
+     "payload":{"text":"content substitution via backdated duplicate","evidence_class":"UNVERIFIED",
+                "cost_tier":"P0","ttl_days":None,"evidence_paths":[]}}
+open(".truth/claims.jsonl","a").write(json.dumps(rec,sort_keys=True)+"\n")
+PYEOF
+if ! grep -q "content substitution via backdated" .truth/claims.jsonl; then
+  miss "fault injection failed: backdated duplicate was never appended"
+elif $T validate >/dev/null 2>&1; then
+  miss "validate passed a backdated duplicate id (canonical-order substitution open)"
+else
+  ok "validate failed the backdated duplicate; the commit gate now blocks INV-G's composition gap"
+fi
+mv claims.b1.bak .truth/claims.jsonl
+
+say "FAULT B2 (ADR-008): an IDENTICAL duplicated line (union-merge shape) must still validate"
+cp .truth/claims.jsonl claims.b2.bak
+tail -1 .truth/claims.jsonl >> .truth/claims.jsonl
+if $T validate >/dev/null 2>&1; then
+  ok "identical duplicate line (equal ts) passed -- legitimate union-merge shape"
+else
+  miss "validate rejected a union-merge-duplicated identical line"
+fi
+mv claims.b2.bak .truth/claims.jsonl
+
+say "FAULT B3 (ADR-008, F2): a backdated duplicate with a tz-NAIVE ts must fail validate"
+cp .truth/claims.jsonl claims.b3.bak
+python3 - "$CID_H" <<'PYEOF'
+import json, sys
+# naive ts (no offset) string-sorts before the tz-aware genuine record;
+# the pre-F2 parsed comparison abstained on the tz mismatch and passed it
+rec={"id":sys.argv[1],"kind":"claim","actor":"agent-x","session":"s-evil",
+     "ts":"2026-01-01T00:00:00",
+     "payload":{"text":"substitution via naive-ts backdated duplicate","evidence_class":"UNVERIFIED",
+                "cost_tier":"P0","ttl_days":None,"evidence_paths":[]}}
+open(".truth/claims.jsonl","a").write(json.dumps(rec,sort_keys=True)+"\n")
+PYEOF
+if ! grep -q "naive-ts backdated" .truth/claims.jsonl; then
+  miss "fault injection failed: naive-ts duplicate was never appended"
+elif $T validate >/dev/null 2>&1; then
+  miss "validate passed a naive-ts backdated duplicate (F2 evasion still open)"
+else
+  ok "validate failed the naive-ts backdated duplicate (F2 closed)"
+fi
+mv claims.b3.bak .truth/claims.jsonl
+
+say "FAULT B4 (ADR-008, F2): a backdated duplicate with an UNPARSEABLE ts must fail validate"
+cp .truth/claims.jsonl claims.b4.bak
+python3 - "$CID_H" <<'PYEOF'
+import json, sys
+# junk ts made parse_ts return None, so the pre-F2 comparison abstained;
+# by raw string it still sorts before any ISO ts and wins the fold
+rec={"id":sys.argv[1],"kind":"claim","actor":"agent-x","session":"s-evil",
+     "ts":"1",
+     "payload":{"text":"substitution via junk-ts backdated duplicate","evidence_class":"UNVERIFIED",
+                "cost_tier":"P0","ttl_days":None,"evidence_paths":[]}}
+open(".truth/claims.jsonl","a").write(json.dumps(rec,sort_keys=True)+"\n")
+PYEOF
+if ! grep -q "junk-ts backdated" .truth/claims.jsonl; then
+  miss "fault injection failed: junk-ts duplicate was never appended"
+elif $T validate >/dev/null 2>&1; then
+  miss "validate passed a junk-ts backdated duplicate (F2 evasion still open)"
+else
+  ok "validate failed the junk-ts backdated duplicate (F2 closed)"
+fi
+mv claims.b4.bak .truth/claims.jsonl
+
 # ---- FAULT L (v0.4): re-verification must survive the next scan ----------
 say "FAULT L: re-verified claim must stay live across a subsequent scan"
 CID_R=$($T claim "watched.txt has multiple lines" --class VERIFIED \
@@ -300,7 +476,7 @@ CID_R=$($T claim "watched.txt has multiple lines" --class VERIFIED \
 echo "another line" >> watched.txt
 git add watched.txt && git commit -qm "canary: touch evidence again" --no-verify
 $T invalidate-scan --quiet
-$T verdict "$CID_R" agree --basis "human re-verified at new HEAD" >/dev/null
+TRUTH_SESSION=s-canary-verifier $T verdict "$CID_R" agree --basis "human re-verified at new HEAD" >/dev/null
 $T invalidate-scan --quiet
 if $T list --live --json | grep -q "$CID_R"; then
   ok "re-verified $CID_R stayed live (anchor advanced)"
@@ -308,7 +484,7 @@ else
   miss "re-verified $CID_R re-staled on the frozen anchor"
 fi
 
-# ---- FAULT M (v0.4): retraction without human confirmation refused --------
+# ---- FAULT M (v0.4) + H1-H3 (ADR-011): tombstone confirmation ladder ------
 say "FAULT M (G12 enforced): retraction without TRUTH_HUMAN=1 must be refused"
 CID_M=$($T claim "a claim a verifier wants dead" --tier P2)
 if $T verdict "$CID_M" retracted --basis "verifier overreach" >/dev/null 2>&1; then
@@ -316,10 +492,54 @@ if $T verdict "$CID_M" retracted --basis "verifier overreach" >/dev/null 2>&1; t
 else
   ok "retraction refused without TRUTH_HUMAN=1"
 fi
-if TRUTH_HUMAN=1 $T verdict "$CID_M" retracted --basis "human confirms" >/dev/null 2>&1; then
-  ok "human-confirmed retraction accepted"
+say "FAULT H1 (ADR-011): TRUTH_HUMAN=1 alone, headless, must be refused"
+if TRUTH_HUMAN=1 $T verdict "$CID_M" retracted --basis "agent set the env var" >/dev/null 2>&1; then
+  miss "env-var-only retraction accepted with no TTY and no acknowledgment"
+else
+  ok "headless TRUTH_HUMAN=1 without acknowledgment refused"
+fi
+say "FAULT H3 (ADR-011): an acknowledgment naming a different id must be refused"
+if TRUTH_HUMAN=1 TRUTH_HUMAN_ACK="tr-deadbeef" $T verdict "$CID_M" retracted --basis "stale ack" >/dev/null 2>&1; then
+  miss "retraction accepted under an acknowledgment naming another id"
+else
+  ok "mismatched TRUTH_HUMAN_ACK refused (lingering exports cannot kill arbitrary claims)"
+fi
+say "FAULT H2 (ADR-011): id-specific acknowledgment must be accepted"
+if TRUTH_HUMAN=1 TRUTH_HUMAN_ACK="$CID_M" $T verdict "$CID_M" retracted --basis "human confirms" >/dev/null 2>&1; then
+  ok "human-confirmed retraction accepted (exact-id acknowledgment)"
 else
   miss "human-confirmed retraction refused"
+fi
+
+say "FAULT V1 (ADR-010): agree from the claim's own session must be refused"
+CID_V=$($T claim "self-verification probe" --tier P2)
+if $T verdict "$CID_V" agree --basis "I checked my own work" >/dev/null 2>&1; then
+  miss "the authoring session filed its own agree (self-verification open)"
+else
+  ok "same-session agree refused; dispatch to a fresh session required"
+fi
+say "FAULT V3 (ADR-010): diverge from the claim's own session must be ALLOWED (self-incrimination)"
+if $T verdict "$CID_V" diverge --basis "author retracts confidence: probe was wrong" >/dev/null 2>&1; then
+  ok "same-session diverge accepted (runs against interest)"
+else
+  miss "self-incrimination was refused -- corrections must stay cheap"
+fi
+say "FAULT V2 (ADR-010): agree from a different session must be accepted"
+CID_V2=$($T claim "independent verification probe" --tier P2)
+if TRUTH_SESSION=s-canary-verifier $T verdict "$CID_V2" agree --basis "independently decoded and confirmed" >/dev/null 2>&1; then
+  ok "fresh-session agree accepted"
+else
+  miss "the verifier path itself is broken"
+fi
+
+say "FAULT M1 (ADR-012): diverge --mechanical must round-trip subtype to the queue"
+CID_M1=$($T claim "recipe-drift probe" --tier P1)
+TRUTH_SESSION=s-canary-verifier $T verdict "$CID_M1" diverge --mechanical --basis "output format changed, fact holds" >/dev/null
+if $T queue --json | grep -q "mechanical" && \
+   $T stats --json | grep -q '"diverge_mechanical": 1'; then
+  ok "mechanical subtype visible in queue and split out in stats"
+else
+  miss "mechanical divergence subtype lost between verdict, queue, and stats"
 fi
 
 # ---- FAULT R (ADR-002, v0.5): native work kernel ---------------------------
@@ -381,8 +601,13 @@ if $T done "$WK_DEAD" --cancel --basis "agent overreach" >/dev/null 2>&1; then
 else
   ok "cancel refused without TRUTH_HUMAN=1"
 fi
-if TRUTH_HUMAN=1 $T done "$WK_DEAD" --cancel --basis "human confirms" >/dev/null 2>&1; then
-  ok "human-confirmed cancel accepted"
+if TRUTH_HUMAN=1 $T done "$WK_DEAD" --cancel --basis "env var alone" >/dev/null 2>&1; then
+  miss "env-var-only cancel accepted headless (ADR-011)"
+else
+  ok "headless TRUTH_HUMAN=1 cancel without acknowledgment refused (ADR-011)"
+fi
+if TRUTH_HUMAN=1 TRUTH_HUMAN_ACK="$WK_DEAD" $T done "$WK_DEAD" --cancel --basis "human confirms" >/dev/null 2>&1; then
+  ok "human-confirmed cancel accepted (exact-id acknowledgment)"
 else
   miss "human-confirmed cancel refused"
 fi
@@ -665,7 +890,7 @@ echo data > g.txt
 git add -A && git commit -qm "canary: init"
 CID_E=$($T claim "g.txt says data" --class VERIFIED \
         --evidence-cmd "cat g.txt" --paths "g.txt" --tier P0)
-$T verdict "$CID_E" agree --basis "canary: verified at filing" >/dev/null
+TRUTH_SESSION=s-canary-verifier $T verdict "$CID_E" agree --basis "canary: verified at filing" >/dev/null
 git checkout -q --orphan rewritten
 git add -A && git commit -qm "canary: history rewritten"
 git branch -D main -q

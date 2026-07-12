@@ -1,0 +1,54 @@
+# Evidence-command allowlist (ADR-009). One bare command name per line.
+#
+# Evidence commands re-execute later inside VERIFIER sessions (recheck),
+# so everything here must be read-only: it will run with whatever the
+# repository can read, in a session that did not write it. The screen
+# also refuses output redirection (except to /dev/null or an fd dup
+# like 2>&1), command substitution ('$()', backticks), subshells, and
+# path-form programs ('./x', '/usr/bin/x') regardless of this list.
+# The screen is quote-aware: a '|' inside a quoted regex is an argument.
+# Pipelines of allowlisted commands pass; input redirection ('<') is
+# read-only and passes.
+#
+# Test runners (pytest, npm test, cargo test, make) are deliberately NOT
+# shipped here: a test runner executes repository code, which is exactly
+# the arbitrary-execution channel being screened. Add yours below as a
+# conscious, committed policy decision if you accept that trade.
+#
+# git is deliberately NOT shipped (removed v0.6.2, F1): `git -c
+# <k>=!cmd ... <alias>` runs an arbitrary shell, and pagers/--exec-path
+# are further exec channels the bare-name screen cannot bound. Add it
+# consciously if you accept that; even then PROGRAM_ARG_DENY blocks the
+# worst flags. find and sort ARE shipped but their write/exec flags
+# (find -exec/-fprintf, sort -o) are refused by that same table.
+grep
+rg
+ls
+cat
+head
+tail
+wc
+find
+sort
+uniq
+cut
+tr
+diff
+comm
+echo
+printf
+test
+[
+date
+basename
+dirname
+realpath
+stat
+file
+sha256sum
+shasum
+md5sum
+jq
+# sed and awk are NOT shipped: `sed -i` and awk output redirection write
+# files without a '>' the screen could see. Add them only if your
+# conventions forbid those forms.

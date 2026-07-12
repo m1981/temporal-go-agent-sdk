@@ -1,5 +1,62 @@
 #!/usr/bin/env python3
-"""truth v0.5.7 -- append-only claims ledger with a native work kernel.
+"""truth v0.6.2 -- append-only claims ledger with a native work kernel.
+
+v0.6.2 (review findings F1-F5, independent Fable review of v0.6.0/v0.6.1):
+  * F1 ADR-009: the evidence screen was bare-name only, so allowlisted
+    programs with their own exec/write flags passed (find -exec, sort
+    -o, git -c <k>=!cmd). PROGRAM_ARG_DENY screens those flags per
+    program; git leaves the shipped default allowlist entirely (its exec
+    surface is unbounded). Canary FAULT E5.
+  * F2 ADR-008: order_check compared parsed timestamps and abstained
+    on tz-naive/unparseable ts, but fold() sorts on the raw ts STRING --
+    so a backdated duplicate with a naive or junk ts substituted content
+    with validate green. order_check now compares the same string fold
+    sorts on, closing the attack directly. Canary FAULTS B3, B4.
+    (F5, a redundant validate-layer non-ISO-ts reject, is deferred: it
+    would need the JSON-schema mirror's format:date-time enforced in
+    lockstep or the FS-2 agreement generator flags drift -- a separate
+    coordinated change, and F2 already closes the hole.)
+  * F3 ADR-007: scope-signal narrowed vs the proposals doc -- added -t
+    (ripgrep type filter) and glob-metacharacter positionals to the
+    detector, and everywhere/always/each to the quantifier lexicon. A
+    bare tracked-subdir name (no slash/glob) still evades: resolving it
+    needs a git oracle the pure core has no access to (documented
+    residual). Canary FAULTS Q5, Q6.
+
+v0.6.0 (solo-regime hardening; docs/hardening-proposals-solo-regime.md):
+  * ADR-007 quantifier-scope gate: intake refuses a universally
+    quantified claim text backed by a scoped evidence command (the exact
+    shape of both pilot divergences, paper section 2) unless
+    --scope-ok "<why the scope covers the quantifier>" is given; the
+    sentence is stored as payload scope_basis, attackable by verifiers.
+  * ADR-008 order coherence: `validate` fails on a duplicate-id record
+    whose ts sorts before the record it duplicates (the backdated
+    substitution the fold accepts, paper section 1) and warns on clock
+    regression beyond TRUTH-skew tolerance. File order is append order
+    (INV-A), so backdating is visible; the commit gate now blocks it.
+  * ADR-009 evidence screen: evidence commands are screened against
+    .truth/evidence-allow at intake AND recheck (deferred execution in a
+    verifier session is the threat). --evidence-unsafe-ok files anyway
+    with evidence.screened=false, but recheck never executes an
+    unscreened command. Missing allowlist fails closed for VERIFIED.
+  * ADR-010 session separation: `verdict <id> agree` from the claim's
+    own session is refused (self-verification); diverge/cannot_verify
+    from the author stay allowed (self-incrimination runs against
+    interest). Override: TRUTH_SELF_VERDICT=1 (self-attested, F4 class).
+  * ADR-011 tombstones need a terminal: retraction and cancel require
+    TRUTH_HUMAN=1 plus either an interactive typed-id confirmation or
+    TRUTH_HUMAN_ACK=<exact-id> for headless human use. Refusal messages
+    no longer teach the bypass ritual.
+  * ADR-012 divergence subtype: `verdict <id> diverge --mechanical`
+    records that the recipe changed rather than reality; fold and
+    status unchanged, queue and stats display it.
+  * FS-1 `truth stats`: status/tier/class counts, verdict rates, claim
+    half-life per tier (live->stale), queue aging; intake prints the
+    observed median half-life beside an author-chosen --ttl-days once
+    >=5 observations exist for the tier (suggestion only, never set).
+  * FS-3 gate only: `doctor` measures fold latency and warns above
+    200ms (the trigger for the snapshot cache; unimplemented until it
+    fires, per the growth-gate discipline).
 
 v0.5.7 (ADR-005 trial, impact verb): `truth impact <path>...` -- the
   pre-edit whisper's template half. Pure fold query, read-only: for each
@@ -119,8 +176,11 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import statistics
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 
 LEDGER_REL = ".truth/claims.jsonl"
@@ -138,6 +198,42 @@ DUPLICATE_THRESHOLD = 0.6
 QUEUE_AGE_WARN_DAYS = 14
 ID_RE = re.compile(r"^tr-[0-9a-f]{8}$")
 WK_ID_RE = re.compile(r"^wk-[0-9a-f]{8}$")
+# ADR-007: universal-quantifier lexicon (tokens matched word-level via
+# tokens(); phrases matched with word boundaries). Changed only together
+# with the Q-canary faults.
+QUANTIFIER_TOKENS = frozenset(("only", "no", "none", "never", "nowhere",
+                               "anywhere", "everywhere", "always", "each",
+                               "all", "every", "any", "entire",
+                               "whole", "zero"))
+QUANTIFIER_PHRASES = ("repo-wide", "the repo", "the codebase", "the project")
+# ADR-007: option tokens that narrow an evidence command's domain
+# (-t/--type is ripgrep's type filter -- a scope narrower that carries no
+# slash, so it evaded the positional check, F3/v0.6.2).
+SCOPE_OPTION_TOKENS = frozenset(("--include", "--exclude", "--include-dir",
+                                 "--exclude-dir", "-g", "--glob", "--path",
+                                 "-t", "--type"))
+# ADR-009 (v0.6.2, F1): allowlisted programs whose own options open an
+# exec or file-write channel the bare-name screen cannot see. Keyed by
+# program; an argument whose '='-prefix is listed is refused even though
+# the program is allowlisted. git's exec surface (-c <k>=!cmd aliases,
+# pagers, --exec-path) is too broad to bound this way, so it is dropped
+# from the shipped default allowlist (see .truth/evidence-allow); this
+# entry is defense-in-depth for a consumer who re-adds it consciously.
+PROGRAM_ARG_DENY = {
+    "find": frozenset(("-exec", "-execdir", "-ok", "-okdir", "-delete",
+                       "-fprintf", "-fprint", "-fprint0", "-fls")),
+    "sort": frozenset(("-o", "--output")),
+    "git": frozenset(("-c", "--exec-path", "-p", "--paginate", "-O",
+                      "--output")),
+}
+# ADR-008: same-machine append races invert timestamps by milliseconds;
+# anything beyond this is a clock regression worth a warning.
+SKEW_TOLERANCE_SECONDS = 300
+EVIDENCE_ALLOW_REL = ".truth/evidence-allow"
+# FS-3: the scale gate -- doctor warns when load+fold exceeds this;
+# the snapshot cache stays unimplemented until the warning fires.
+FOLD_LATENCY_WARN_MS = 200
+HALF_LIFE_MIN_OBS = 5  # FS-1: below this, intake suggests nothing (noise)
 
 # ═══════════════════════════════════════════════════════════════════════
 # PURE CORE -- no I/O, no clock reads, no env, no subprocess.
@@ -247,6 +343,13 @@ def fold(events):
                 if p["verdict"] == "agree" and p.get("anchor_commit") \
                         and claims[c]["status"] == "live":
                     claims[c]["anchor"] = p["anchor_commit"]
+                # ADR-012: subtype is display metadata, never status --
+                # a mechanically diverged claim still queues (the recipe
+                # needs re-filing), it just says why.
+                if claims[c]["status"] == "diverged":
+                    claims[c]["subtype"] = (p.get("subtype")
+                                            if p["verdict"] == "diverge"
+                                            else None)
         elif kind == "invalidation":
             c = p.get("claim")
             if c in claims:
@@ -398,6 +501,261 @@ def determinism_error(run1, run2):
                 "false-divergence risk explicitly with --single-run.")
     return None
 
+def quantifier_scope_conflict(text, evidence_cmd):
+    """ADR-007: a universally quantified sentence over a scoped command
+    is the exact shape of both pilot divergences -- a repo-wide clause
+    backed by a package-scoped grep whose filters do invisible work.
+    Returns (q_signal, s_signal) when both sides fire, else None. Token
+    matching only; the gate forces the mismatch to be *stated*
+    (--scope-ok), never judges whether the scope covers the quantifier
+    -- that stays the verifier's job."""
+    if not evidence_cmd:
+        return None
+    low = text.lower()
+    q = next((ph for ph in QUANTIFIER_PHRASES
+              if re.search(r"\b" + re.escape(ph) + r"\b", low)), None)
+    if q is None:
+        q = next((t for t in sorted(QUANTIFIER_TOKENS) if t in tokens(text)),
+                 None)
+    if q is None:
+        return None
+    parts = evidence_cmd.split()
+    s = next((p for p in parts
+              if p in SCOPE_OPTION_TOKENS
+              or p.split("=", 1)[0] in SCOPE_OPTION_TOKENS), None)
+    if s is None and evidence_cmd.strip().startswith("cd "):
+        s = "cd"
+    if s is None:
+        # a positional that narrows the domain: a path (slash) or a glob
+        # metacharacter (F3/v0.6.2 -- 'grep foo src/*.py' is scoped). A
+        # bare tracked-subdir name with no slash or glob ('grep foo src')
+        # still evades: resolving it needs a git oracle, which this pure
+        # core deliberately has no access to (residual, ADR-007 comment).
+        s = next((p for p in parts[1:]
+                  if not p.startswith("-")
+                  and ("/" in p or any(c in p for c in "*?["))), None)
+    if s is None:
+        return None
+    return (q, s)
+
+_SCREEN_SEPARATORS = frozenset((";", "|", "||", "&&", "&"))
+_SCREEN_PUNCT = frozenset("();<>|&")
+
+def screen_evidence_command(cmd, allowlist):
+    """ADR-009: evidence commands re-execute later in a *verifier's*
+    session (recheck) -- deferred code execution across the trust seam
+    G11 protects. Static screen over a QUOTE-AWARE token stream (shlex
+    punctuation mode -- a '|' inside a quoted grep regex is an argument,
+    not a pipe; the first real ledger command proved the naive split
+    wrong): every segment's program must be a bare name on the
+    allowlist; no command substitution; output redirection only to the
+    bit bucket ('>/dev/null') or an fd dup ('2>&1') -- the pin-the-
+    output convention depends on those. Input redirection (<) is
+    read-only and allowed. Returns an error string or None."""
+    if allowlist is None:
+        return ("no evidence-command allowlist at " + EVIDENCE_ALLOW_REL +
+                " -- the safety screen fails closed (ADR-009). Create it "
+                "(one command name per line; the template ships a "
+                "read-only default) before filing VERIFIED claims.")
+    if "$(" in cmd or "`" in cmd:
+        return ("command substitution ('$(' or backtick) is not "
+                "screenable (ADR-009)")
+    lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    try:
+        toks = list(lex)
+    except ValueError as e:
+        return f"unparseable command ({e}) (ADR-009)"
+    if not toks:
+        return "empty command (ADR-009)"
+    expecting_program = True
+    program = None  # the current segment's program, for arg-level screening
+    redir = None  # 'in' | 'out' when the next token is a redirection target
+    for tok in toks:
+        if redir:
+            if redir == "out" and tok != "/dev/null" and not tok.isdigit():
+                return (f"output redirection to {tok!r} is refused -- "
+                        "evidence commands must be read-only; '/dev/null' "
+                        "and fd dups ('2>&1') are the only allowed sinks "
+                        "(ADR-009)")
+            redir = None
+            continue
+        if tok in _SCREEN_SEPARATORS:
+            expecting_program = True
+            program = None
+            continue
+        if tok and set(tok) <= _SCREEN_PUNCT:
+            if tok.startswith("<"):
+                redir = "in"    # reads are fine, any source
+            elif tok.startswith(">"):
+                redir = "out"   # writes only to /dev/null or an fd
+            else:
+                return f"unscreenable shell construct {tok!r} (ADR-009)"
+            continue
+        if expecting_program:
+            if "/" in tok:
+                return (f"program {tok!r} is a path, not a bare command "
+                        "name -- repo-local executables are not "
+                        "screenable (ADR-009)")
+            if tok not in allowlist:
+                return (f"'{tok}' is not in {EVIDENCE_ALLOW_REL} (ADR-009). "
+                        "Add it there if it is read-only and you accept it "
+                        "re-running inside verifier sessions, or file with "
+                        "--evidence-unsafe-ok (recheck will then refuse to "
+                        "execute it).")
+            expecting_program = False
+            program = tok
+        else:
+            # F1/v0.6.2: an allowlisted program can still open an exec or
+            # file-write channel through its own flags (find -exec, sort
+            # -o, git -c alias=!cmd). The bare-name check above cannot see
+            # this; the per-program deny table can.
+            denied = PROGRAM_ARG_DENY.get(program)
+            if denied and tok.split("=", 1)[0] in denied:
+                return (f"{program} {tok.split('=', 1)[0]!r} opens an exec "
+                        "or file-write channel -- evidence commands must be "
+                        "read-only, and this one would re-run inside a "
+                        "verifier session (ADR-009)")
+    if expecting_program or redir:
+        return "dangling operator at end of command (ADR-009)"
+    return None
+
+def order_check(events):
+    """ADR-008: within one repository's history, file order is append
+    order (INV-A prefix gate), so a backdated duplicate id is *visible*:
+    it appears later in the file than the record it sorts before.
+    Returns (errors, warnings). Errors: duplicate id with strictly
+    earlier ts (the canonical-order substitution attack); an identical
+    line duplicated by union merge carries an equal ts and passes, and
+    the stable fold sort keeps the genuine-first record winning.
+    Warnings only for clock regression beyond tolerance -- a branch
+    ledger union-merged into main legitimately places older records
+    after newer ones, and failing there would punish the exact merge
+    path the confluent fold was built for. NOTE: unlike the fold, this
+    check is deliberately order-SENSITIVE -- validating a re-sorted
+    stream is not equivalent to validating the file."""
+    errors, warnings = [], []
+    first_seen = {}
+    max_ts, max_line = None, None
+    def cmp_ok(a, b):
+        return (a.tzinfo is None) == (b.tzinfo is None)
+    for n, ev in events:
+        eid = ev.get("id")
+        ts_raw = ev.get("ts") or ""
+        ts = parse_ts(ts_raw)
+        if eid in first_seen:
+            f_ts_raw, f_line = first_seen[eid]
+            # fold() orders by the raw ts STRING then id (a duplicate id
+            # ties on id, so the ts string alone decides the winner). Test
+            # substitution exactly as fold sorts -- string-comparing, not
+            # parsing -- so a tz-naive or non-ISO forged ts cannot slip
+            # past a parsed comparison the way it did before v0.6.2 (F2).
+            # Equal strings = the union-merge shape; stable sort keeps the
+            # genuine first-appended record, so it stays legal.
+            if ts_raw < f_ts_raw:
+                errors.append(
+                    f"line {n}: duplicate id {eid} with ts sorting before "
+                    f"line {f_line}'s -- canonical-order substitution "
+                    "(ADR-008): a later append may not sort before the "
+                    "record it duplicates")
+        elif eid:
+            first_seen[eid] = (ts_raw, n)
+        if ts and max_ts and cmp_ok(ts, max_ts) \
+                and (max_ts - ts).total_seconds() > SKEW_TOLERANCE_SECONDS:
+            warnings.append(
+                f"line {n}: ts precedes line {max_line}'s by more than "
+                f"{SKEW_TOLERANCE_SECONDS}s (ADR-008) -- legitimate after "
+                "a union merge, a clock regression otherwise")
+        if ts and (max_ts is None or (cmp_ok(ts, max_ts) and ts > max_ts)):
+            max_ts, max_line = ts, n
+    return errors, warnings
+
+# ------------------------------------------------------ stats (FS-1)
+
+def half_life_observations(events):
+    """FS-1: elapsed live-time for every claim that was live and later
+    went stale -- the raw material for tier-calibrated TTL suggestions
+    (paper section 6.2, made a number). This replays the same (ts, id)
+    order and the same status rules as fold(); fold stays authoritative
+    for status, and test-truth-core cross-checks the two never disagree
+    on final state. Returns a list of (tier, days_live) tuples."""
+    ordered = sorted(events, key=lambda ne: (ne[1].get("ts") or "",
+                                             ne[1].get("id") or ""))
+    state = {}   # cid -> {"tier", "status", "since": datetime|None}
+    obs = []
+    verdict_map = {"agree": "live", "diverge": "diverged",
+                   "cannot_verify": "cannot_verify", "retracted": "retracted"}
+    for _, ev in ordered:
+        kind, p = ev.get("kind"), ev.get("payload", {})
+        if kind == "claim":
+            if ev["id"] not in state:
+                state[ev["id"]] = {"tier": p.get("cost_tier"),
+                                   "status": "unverified", "since": None}
+        elif kind in ("verdict", "invalidation"):
+            cid = p.get("claim")
+            e = state.get(cid)
+            if not e or e["status"] == "retracted":
+                continue
+            new = ("stale" if kind == "invalidation"
+                   else verdict_map.get(p.get("verdict")))
+            if not new:
+                continue
+            ts = parse_ts(ev.get("ts") or "")
+            if e["status"] == "live" and new == "stale" \
+                    and e["since"] and ts \
+                    and (ts.tzinfo is None) == (e["since"].tzinfo is None):
+                obs.append((e["tier"],
+                            (ts - e["since"]).total_seconds() / 86400.0))
+            e["status"] = new
+            e["since"] = ts if new == "live" else None
+    return obs, {cid: e["status"] for cid, e in state.items()}
+
+def stats_report(events, now):
+    """FS-1: everything the monthly hand-audit (paper section 8 item 2)
+    needs that a machine can compute. Pure fold consumer."""
+    claims, _ = fold(events)
+    by_status, by_tier = {}, {}
+    for e in claims.values():
+        by_status[e["status"]] = by_status.get(e["status"], 0) + 1
+        t = e["claim"]["payload"].get("cost_tier")
+        by_tier.setdefault(t, {})[e["status"]] = \
+            by_tier.setdefault(t, {}).get(e["status"], 0) + 1
+    verdicts = {"agree": 0, "diverge_genuine": 0, "diverge_mechanical": 0,
+                "cannot_verify": 0, "retracted": 0}
+    for _, ev in events:
+        if ev.get("kind") != "verdict":
+            continue
+        v = ev.get("payload", {}).get("verdict")
+        if v == "diverge":
+            key = ("diverge_mechanical"
+                   if ev["payload"].get("subtype") == "mechanical"
+                   else "diverge_genuine")
+            verdicts[key] += 1
+        elif v in verdicts:
+            verdicts[v] += 1
+    obs, _ = half_life_observations(events)
+    half_life = {}
+    for tier in TIERS:
+        days = sorted(d for t, d in obs if t == tier)
+        if days:
+            half_life[tier] = {"n": len(days),
+                               "median_days": round(statistics.median(days), 2)}
+    queue = queue_rows(claims, now)
+    ages = sorted(r["age_days"] for r in queue if r["age_days"] is not None)
+    return {"claims_by_status": by_status, "claims_by_tier": by_tier,
+            "verdicts": verdicts, "half_life": half_life,
+            "queue_size": len(queue),
+            "queue_max_age_days": ages[-1] if ages else None}
+
+def ttl_suggestion(observations, tier):
+    """FS-1: observed median half-life for the tier, or None below the
+    observation threshold (suggestions from noise are worse than none).
+    Suggestion only -- TTLs stay author decisions."""
+    days = [d for t, d in observations if t == tier]
+    if len(days) < HALF_LIFE_MIN_OBS:
+        return None
+    return round(statistics.median(days), 1)
+
 # --------------------------------------------------- verdict decisions
 
 def recheck_verdict(evidence, digest, returncode):
@@ -472,6 +830,8 @@ def queue_rows(claims, now):
         reason = None
         if status == "diverged":
             reason = "author/verifier diverged"
+            if e.get("subtype") == "mechanical":
+                reason += " (mechanical: recipe changed, fact may hold)"
         elif status == "stale" and tier in ("P0", "P1"):
             reason = "evidence invalidated"
         elif status == "cannot_verify" and tier == "P0":
@@ -589,6 +949,10 @@ def validate_events(events):
         for field in ("id", "kind", "actor", "session", "ts", "payload"):
             if field not in ev:
                 errors.append(f"line {n}: missing envelope field '{field}'")
+        for field in ("actor", "session"):
+            if field in ev and not ev[field]:
+                errors.append(f"line {n}: empty envelope field '{field}' "
+                              "(schema requires minLength 1)")
         kind, p = ev.get("kind"), ev.get("payload", {})
         # issue records carry wk- envelope ids (ADR-002); everything else tr-
         id_re, id_name = ((WK_ID_RE, "wk-hex8") if kind == "issue"
@@ -605,6 +969,19 @@ def validate_events(events):
                 errors.append(f"line {n}: bad evidence_class")
             if p.get("cost_tier") not in TIERS:
                 errors.append(f"line {n}: bad cost_tier")
+            ttl = p.get("ttl_days")
+            if ttl is not None and "ttl_days" in p and \
+                    (isinstance(ttl, bool) or not isinstance(ttl, int)
+                     or ttl < 1):
+                errors.append(f"line {n}: ttl_days must be a positive "
+                              "integer or null")
+            if "scope_basis" in p and not p["scope_basis"]:
+                errors.append(f"line {n}: empty scope_basis (ADR-007: the "
+                              "override carries a sentence, not a boolean)")
+            if "screened" in p.get("evidence", {}) \
+                    and not isinstance(p["evidence"]["screened"], bool):
+                errors.append(f"line {n}: evidence.screened must be a "
+                              "boolean (ADR-009)")
             if p.get("evidence_class") == "VERIFIED":
                 ev_ = p.get("evidence", {})
                 if not (ev_.get("command") and ev_.get("output_hash")
@@ -620,6 +997,9 @@ def validate_events(events):
                 errors.append(f"line {n}: malformed verdict")
             elif not ID_RE.match(str(p.get("claim"))):
                 errors.append(f"line {n}: verdict claim ref not tr-hex8")
+            if "subtype" in p and p["subtype"] != "mechanical":
+                errors.append(f"line {n}: verdict subtype must be "
+                              "'mechanical' when present (ADR-012)")
         elif kind == "invalidation":
             if not p.get("claim") or not p.get("commit"):
                 errors.append(f"line {n}: malformed invalidation")
@@ -714,6 +1094,51 @@ def run_evidence(cmd):
     r = subprocess.run(cmd, shell=True, capture_output=True)
     return hashlib.sha256(r.stdout).hexdigest(), r.returncode
 
+def load_allowlist():
+    """ADR-009: the evidence-command allowlist, or None when absent
+    (the screen then fails closed for VERIFIED intake and recheck)."""
+    path = os.path.join(repo_root(), EVIDENCE_ALLOW_REL)
+    if not os.path.exists(path):
+        return None
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                out.append(line)
+    return out
+
+def human_ack_error(target_id, what):
+    """ADR-011: tombstones require TRUTH_HUMAN=1 plus either an
+    interactive typed-id confirmation or an id-specific TRUTH_HUMAN_ACK
+    (headless human use; documented in --help and .truth/README.md, and
+    deliberately NOT named in the agent-facing refusals below -- an
+    error message that names the bypass is an instruction to a
+    compliant agent, the exact failure F4's fix left open)."""
+    if os.environ.get("TRUTH_HUMAN") != "1":
+        return (f"truth: {what} is a human tombstone decision (G12). If "
+                "you are an agent: file `diverge` (or close with a basis) "
+                "saying it should die, and stop -- the human queue "
+                "decides. If you are a human: re-run this in your own "
+                "terminal.")
+    ack = os.environ.get("TRUTH_HUMAN_ACK")
+    if ack is not None:
+        if ack == target_id:
+            return None
+        return (f"truth: the acknowledgment names {ack!r}, not "
+                f"{target_id} -- it must cite the exact id it kills "
+                "(ADR-011); a lingering environment variable may not "
+                "authorize arbitrary tombstones")
+    if not sys.stdin.isatty():
+        return (f"truth: {what} is confirmed interactively -- re-run "
+                "this in your own terminal (ADR-011). Agents: file "
+                "`diverge` with a basis and stop; the human queue "
+                "decides.")
+    typed = input(f"type {target_id} to confirm {what}: ").strip()
+    if typed != target_id:
+        return "truth: confirmation mismatch -- nothing filed"
+    return None
+
 def append_record(kind, payload, prefix="tr-"):
     rec = make_record(kind, payload, actor(), session(), now_iso(), prefix)
     path = ledger_path()
@@ -744,12 +1169,14 @@ def load_events(stream=None):
 # ---------------------------------------------------------------- commands
 
 def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
-                        ttl_days, basis, single_run, duplicate_ok, claims):
-    """Full claim intake -- G8 duplicate gate, INV-B/INV-C/G1 checks, G6
-    determinism double-run, INV-M dead-tripwire checks -- WITHOUT
-    appending. Shared by `claim` and `done --claim` so claim-at-death goes
-    through the identical intake, and so `done` can validate everything
-    before it appends anything (ADR-002: both records or neither)."""
+                        ttl_days, basis, single_run, duplicate_ok, claims,
+                        scope_basis=None, unsafe_ok=False):
+    """Full claim intake -- G8 duplicate gate, ADR-007 quantifier-scope
+    gate, INV-B/INV-C/G1 checks, ADR-009 evidence screen, G6 determinism
+    double-run, INV-M dead-tripwire checks -- WITHOUT appending. Shared
+    by `claim` and `done --claim` so claim-at-death goes through the
+    identical intake, and so `done` can validate everything before it
+    appends anything (ADR-002: both records or neither)."""
     if not text or not text.strip():
         sys.exit("truth: claim text must be non-empty -- an assertion with "
                  "no sentence cannot be verified, diverged from, or cited "
@@ -760,6 +1187,16 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
             lines = "\n".join(f"  {cid}: {t}" for cid, t in similar)
             sys.exit("truth: refusing near-duplicate of active claim(s) (G8):\n"
                      f"{lines}\nRe-file with --duplicate-ok if genuinely distinct.")
+
+    conflict = quantifier_scope_conflict(text, evidence_cmd)
+    if conflict and not scope_basis:
+        q, s = conflict
+        sys.exit(f"truth: claim text quantifies universally ({q!r}) but the "
+                 f"evidence command is scoped ({s!r}) -- the exact shape of "
+                 "both pilot divergences (ADR-007). Either narrow the "
+                 "claim's sentence to the command's actual domain, or "
+                 "re-file with --scope-ok \"<one sentence: why this scope "
+                 "covers that quantifier>\".")
 
     paths = split_csv(paths_csv)
     if paths:
@@ -787,12 +1224,21 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
     payload = {"text": text, "evidence_class": evidence_class,
                "cost_tier": tier, "ttl_days": ttl_days,
                "evidence_paths": paths}
+    if scope_basis:
+        payload["scope_basis"] = scope_basis
 
     if evidence_class == "VERIFIED":
         err = verified_intake_error(evidence_cmd, paths, ttl_days,
                                     head_commit())
         if err:
             sys.exit(err)
+        # ADR-009: screen BEFORE the intake double-run executes anything.
+        # A missing allowlist fails closed even under --evidence-unsafe-ok
+        # (the override targets a specific command, not absent machinery).
+        allow = load_allowlist()
+        screen_err = screen_evidence_command(evidence_cmd, allow)
+        if screen_err and (allow is None or not unsafe_ok):
+            sys.exit("truth: " + screen_err)
         digest, rc = run_evidence(evidence_cmd)
         if not single_run:
             err = determinism_error((digest, rc), run_evidence(evidence_cmd))
@@ -800,7 +1246,8 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
                 sys.exit(err)
         payload["evidence"] = {"command": evidence_cmd,
                                "output_hash": "sha256:" + digest,
-                               "returncode": rc}
+                               "returncode": rc,
+                               "screened": screen_err is None}
         payload["anchor_commit"] = head_commit()
     elif evidence_class == "INFERRED":
         err = inferred_intake_error(basis)
@@ -810,10 +1257,21 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
     return payload
 
 def cmd_claim(a):
-    claims, _ = fold(load_events())
+    events = load_events()
+    claims, _ = fold(events)
     payload = build_claim_payload(a.text, a.evidence_class, a.evidence_cmd,
                                   a.paths, a.tier, a.ttl_days, a.basis,
-                                  a.single_run, a.duplicate_ok, claims)
+                                  a.single_run, a.duplicate_ok, claims,
+                                  a.scope_ok, a.evidence_unsafe_ok)
+    if a.ttl_days:
+        # FS-1: suggestion only, printed beside the author's choice --
+        # TTLs stay author decisions, now data-adjacent.
+        obs, _ = half_life_observations(events)
+        median = ttl_suggestion(obs, a.tier)
+        if median is not None:
+            print(f"note: ledger median half-life for {a.tier}: "
+                  f"{median}d; you chose {a.ttl_days}d (FS-1 suggestion, "
+                  "not a gate)", file=sys.stderr)
     rec = append_record("claim", payload)
     print(json.dumps(rec) if a.json else rec["id"])
 
@@ -824,11 +1282,31 @@ def cmd_verdict(a):
     if claims[a.claim_id]["status"] == "retracted":
         sys.exit(f"truth: {a.claim_id} is retracted -- terminal state (G12). "
                  "File a new claim instead.")
+    if a.mechanical and (a.recheck or a.verdict != "diverge"):
+        sys.exit("truth: --mechanical only annotates a manual diverge "
+                 "(ADR-012: it says the recipe changed, not reality)")
     if a.recheck:
         ev = claims[a.claim_id]["claim"]["payload"].get("evidence")
         if not ev:
             verdict, basis = NO_EVIDENCE_VERDICT
         else:
+            # ADR-009: recheck executes the AUTHOR's command in THIS
+            # session -- never run what the screen rejects. Records are
+            # rescreened against the current allowlist (they may predate
+            # the screen or have been appended raw); screened=false is
+            # an author's own admission and is final.
+            if ev.get("screened") is False:
+                screen_err = ("filed with --evidence-unsafe-ok "
+                              "(evidence.screened=false)")
+            else:
+                screen_err = screen_evidence_command(ev["command"],
+                                                     load_allowlist())
+            if screen_err:
+                sys.exit(f"truth: {a.claim_id}: recheck will not execute "
+                         f"this evidence command -- {screen_err}. If you "
+                         "trust it, run it yourself and file a manual "
+                         "verdict with a basis naming what you ran "
+                         "(ADR-009). Nothing was filed.")
             digest, rc = run_evidence(ev["command"])
             verdict, basis = recheck_verdict(ev, digest, rc)
         if verdict == "agree":
@@ -847,13 +1325,24 @@ def cmd_verdict(a):
     else:
         if not a.verdict or not a.basis:
             sys.exit("truth: manual verdicts require <verdict> and --basis")
-        if a.verdict == "retracted" and os.environ.get("TRUTH_HUMAN") != "1":
-            sys.exit("truth: retraction is a human tombstone decision (G12) "
-                     "and is now ENFORCED, not just documented. A human "
-                     "confirms by running with TRUTH_HUMAN=1. Verifiers: "
-                     "diverge with a basis saying the claim should die.")
+        if a.verdict == "retracted":
+            err = human_ack_error(a.claim_id, "claim retraction")
+            if err:
+                sys.exit(err)
+        if a.verdict == "agree" \
+                and claims[a.claim_id]["claim"].get("session") == session() \
+                and os.environ.get("TRUTH_SELF_VERDICT") != "1":
+            # ADR-010: asymmetric by design -- self-diverge and
+            # self-cannot_verify run against interest and stay allowed.
+            sys.exit(f"truth: agree on a claim this same session filed is "
+                     "self-verification -- the independence seam (G11) "
+                     "exists because authors share their own blind spots "
+                     "(ADR-010). Dispatch it to a fresh session instead: "
+                     f"scripts/truth dispatch {a.claim_id}")
         verdict, basis = a.verdict, a.basis
     payload = {"claim": a.claim_id, "verdict": verdict, "basis": basis}
+    if a.mechanical:
+        payload["subtype"] = "mechanical"
     if verdict == "agree" and \
             claims[a.claim_id]["claim"]["payload"].get("evidence_paths"):
         payload["anchor_commit"] = head_commit()  # re-anchor: durable re-verify
@@ -974,12 +1463,10 @@ def cmd_done(a):
     if a.cancel and a.reopen:
         sys.exit("truth: --cancel and --reopen are mutually exclusive")
     event = "cancelled" if a.cancel else "reopened" if a.reopen else "closed"
-    if event == "cancelled" and os.environ.get("TRUTH_HUMAN") != "1":
-        sys.exit("truth: cancelling an issue is a human tombstone decision "
-                 "(ADR-002, G12 symmetry): it kills an intention without "
-                 "evidence of completion. A human confirms with "
-                 "TRUTH_HUMAN=1. Agents: close with a basis saying the "
-                 "work should die, and let the human queue decide.")
+    if event == "cancelled":
+        err = human_ack_error(a.issue_id, "issue cancellation")
+        if err:
+            sys.exit(err)
     if not a.basis:
         sys.exit(f"truth: '{event}' requires --basis (cite what you did, "
                  "never a vibe)")
@@ -997,7 +1484,8 @@ def cmd_done(a):
         payload = build_claim_payload(a.claim_text, a.evidence_class,
                                       a.evidence_cmd, a.paths, a.tier,
                                       a.ttl_days, a.claim_basis,
-                                      a.single_run, a.duplicate_ok, claims)
+                                      a.single_run, a.duplicate_ok, claims,
+                                      a.scope_ok, a.evidence_unsafe_ok)
         claim_rec = append_record("claim", payload)
     append_record("issue_event", {"issue": a.issue_id, "event": event,
                                   "basis": a.basis})
@@ -1126,10 +1614,41 @@ def cmd_validate(a):
     stream = sys.stdin if a.stdin else None
     events = load_events(stream)
     errors = validate_events(events)
+    order_errors, order_warnings = order_check(events)
+    errors += order_errors
+    for w in order_warnings:
+        print("warning: " + w, file=sys.stderr)
     if errors:
         print("\n".join(errors), file=sys.stderr)
         sys.exit(1)
     print(f"validate: {len(events)} record(s) OK")
+
+def cmd_stats(a):
+    events = load_events()
+    if a.since:
+        events = [(n, ev) for n, ev in events
+                  if (ev.get("ts") or "") >= a.since]
+    report = stats_report(events, now_dt())
+    if a.json:
+        print(json.dumps(report, indent=2))
+        return
+    print("claims by status: " + (", ".join(
+        f"{k}={v}" for k, v in sorted(report["claims_by_status"].items()))
+        or "none"))
+    v = report["verdicts"]
+    print(f"verdicts: agree={v['agree']} diverge_genuine="
+          f"{v['diverge_genuine']} diverge_mechanical="
+          f"{v['diverge_mechanical']} cannot_verify={v['cannot_verify']} "
+          f"retracted={v['retracted']}")
+    if report["half_life"]:
+        for tier, h in sorted(report["half_life"].items()):
+            print(f"half-life {tier}: median {h['median_days']}d "
+                  f"(n={h['n']})")
+    else:
+        print("half-life: no live->stale observations yet")
+    age = report["queue_max_age_days"]
+    print(f"queue: {report['queue_size']} item(s)"
+          + (f", oldest {age}d" if age is not None else ""))
 
 def cmd_doctor(a):
     """G4: check the INSTALLATION, which the sandboxed canary cannot."""
@@ -1149,13 +1668,32 @@ def cmd_doctor(a):
 
     lp = ledger_path()
     if os.path.exists(lp):
-        errs = validate_events(load_events())
+        t0 = time.perf_counter()
+        events_timed = load_events()
+        fold(events_timed)
+        fold_issues(events_timed)
+        fold_ms = (time.perf_counter() - t0) * 1000
+        errs = validate_events(events_timed)
+        errs += order_check(events_timed)[0]
         if errs:
             fail("ledger validates", f"{len(errs)} schema error(s); run truth validate")
         else:
             ok("ledger validates")
+        if fold_ms > FOLD_LATENCY_WARN_MS:
+            warn("fold latency", f"{fold_ms:.0f}ms -- the FS-3 scale gate "
+                 "tripped: time to implement the fold snapshot cache")
+        else:
+            ok("fold latency", f"{fold_ms:.0f}ms")
     else:
         fail("ledger exists", f"{LEDGER_REL} missing -- touch it")
+
+    if load_allowlist() is not None:
+        ok("evidence allowlist present")
+    else:
+        fail("evidence allowlist present",
+             f"{EVIDENCE_ALLOW_REL} missing -- VERIFIED intake and recheck "
+             "fail closed without it (ADR-009); the template ships a "
+             "read-only default")
 
     ga = os.path.join(root, ".gitattributes")
     if os.path.exists(ga) and "claims.jsonl merge=union" in open(ga, encoding="utf-8").read():
@@ -1263,15 +1801,29 @@ def main():
                         "accepts false-divergence risk, G6)")
     c.add_argument("--duplicate-ok", action="store_true",
                    help="file despite similarity to an active claim (G8)")
+    c.add_argument("--scope-ok", metavar="SENTENCE",
+                   help="one sentence: why the evidence command's scope "
+                        "covers the claim's universal quantifier (ADR-007; "
+                        "stored as scope_basis, attackable by verifiers)")
+    c.add_argument("--evidence-unsafe-ok", action="store_true",
+                   help="file despite a failed evidence-command safety "
+                        "screen (ADR-009); recheck will refuse to execute "
+                        "the command, so verification becomes manual")
     c.add_argument("--json", action="store_true")
     c.set_defaults(fn=cmd_claim)
 
-    v = sub.add_parser("verdict", help="record a verification verdict")
+    v = sub.add_parser("verdict", help="record a verification verdict; "
+                       "retraction is human-only (TRUTH_HUMAN=1 plus an "
+                       "interactive typed-id confirmation, or "
+                       "TRUTH_HUMAN_ACK=<id> for headless human use)")
     v.add_argument("claim_id")
     v.add_argument("verdict", nargs="?", choices=VERDICTS)
     v.add_argument("--basis")
     v.add_argument("--recheck", action="store_true",
                    help="re-run the claim's evidence command and compare hashes")
+    v.add_argument("--mechanical", action="store_true",
+                   help="annotate a diverge: the measuring recipe changed, "
+                        "not necessarily the fact (ADR-012)")
     v.add_argument("--json", action="store_true")
     v.set_defaults(fn=cmd_verdict)
 
@@ -1310,7 +1862,9 @@ def main():
     dn.add_argument("issue_id")
     dn.add_argument("--basis", help="required: what was done / why it dies")
     dn.add_argument("--cancel", action="store_true",
-                    help="terminal tombstone; requires TRUTH_HUMAN=1 (G12)")
+                    help="terminal tombstone (G12): TRUTH_HUMAN=1 plus an "
+                         "interactive typed-id confirmation, or "
+                         "TRUTH_HUMAN_ACK=<id> for headless human use")
     dn.add_argument("--reopen", action="store_true",
                     help="reopen a closed item (work is cyclical)")
     dn.add_argument("--claim", dest="claim_text",
@@ -1324,6 +1878,10 @@ def main():
     dn.add_argument("--claim-basis", help="basis for an INFERRED completion claim")
     dn.add_argument("--single-run", action="store_true")
     dn.add_argument("--duplicate-ok", action="store_true")
+    dn.add_argument("--scope-ok", metavar="SENTENCE",
+                    help="see `truth claim --scope-ok` (ADR-007)")
+    dn.add_argument("--evidence-unsafe-ok", action="store_true",
+                    help="see `truth claim --evidence-unsafe-ok` (ADR-009)")
     dn.set_defaults(fn=cmd_done)
 
     iss = sub.add_parser("issues", help="list work items with derived status; "
@@ -1344,6 +1902,14 @@ def main():
                        help="human review queue: diverged + stale P0/P1 + unverifiable P0")
     q.add_argument("--json", action="store_true")
     q.set_defaults(fn=cmd_queue)
+
+    stt = sub.add_parser("stats", help="ledger metrics (FS-1): status/tier "
+                         "counts, verdict rates, claim half-life, queue "
+                         "aging -- the monthly audit's mechanical half")
+    stt.add_argument("--since", metavar="ISO_TS",
+                     help="only count events with ts >= this ISO timestamp")
+    stt.add_argument("--json", action="store_true")
+    stt.set_defaults(fn=cmd_stats)
 
     r = sub.add_parser("ready", help="unblocked issues filtered by premise "
                        "validity (ADR-001); source: --stdin, TRUTH_TRACKER_CMD, "

@@ -42,6 +42,14 @@ Procedure, in order:
    - diverge: the evidence does not support the claim as written, or your
      own checks contradict it. Divergence is a SUCCESS of the process, not
      a failure — never soften a diverge into an agree to be agreeable.
+     If the hash mismatch traces to the command's OUTPUT FORMAT changing
+     rather than the claimed fact (a count that grew, a reordered
+     listing), add `--mechanical` to your diverge (ADR-012) — the claim
+     still dies and queues, but the human sees it needs a better recipe,
+     not a correction.
+     If the claim carries a `scope_basis` (ADR-007), attack it: the
+     author asserted that a scoped command covers a universal sentence —
+     verify the scope actually reaches everything the quantifier claims.
    - cannot_verify: the evidence is non-reproducible, out of reach, or the
      claim is too ambiguous to decode into one testable assertion.
      cannot_verify is a first-class, honorable outcome, always preferable
