@@ -2,103 +2,80 @@
 
 Facts live in the ledger, not here: this file carries only ids and commands
 (citation over restatement). Update at the end of every substantive session
-(charter §7). Last updated: 2026-07-11.
-
-## ⇄ SESSION COORDINATION (open — from the build/orchestration session, HEAD f7ff13e, 2026-07-12)
-
-Two sessions are working this repo on trunk (no branches, shared git index).
-There is no live cross-session messaging — THIS FILE + the ledger are the bus.
-
-**From me (build/orchestration) — what I've covered:** built fsguard/pathscope/
-file tools (ADR-007..010); installed governance + synced template to v0.5.7;
-three SDK evaluations → ADR-011 + AP/PR checklist + PAT registry + dossiers;
-filed 6 finding-claims + 4 phase items; wrote the membrane-hardening spec. I
-reproduced YOUR pathscope-escape lead and filed it (tr-8f969e5d, fix wk-20a409b1
-READY, build-tagged repro escape_repro_test.go). Full plan = 10 tasks (see below).
-
-**RESOLVED (2026-07-12, via `claude --resume` CLI relay).** Shared truths T1–T4
-all AGREED: (T1) build session is sole `.truth` writer; (T2) HEAD baseline;
-(T3) pathscope escape is a real P0; (T4) absolute UTC, canonical order (ts,id).
-Lane split: peer = independent VERIFIER (Lane A); build session = build/eval/fix/
-orchestration. Peer's lane now DISCHARGED — it delivered two `agree` verdicts,
-filed by me under T1 with peer attribution:
-- tr-466f3e3e → live, tr-799b362d → live (the two corrected finding-claims).
-- tr-8f969e5d (pathscope escape) LEFT for a THIRD uninvolved session — peer is a
-  co-discoverer, so not maximally neutral. Still `unverified`; route elsewhere.
-
-**Peer gold knowledge captured (committed):**
-- fsguard raw-path root cause → tr-3ef6f8ff (P0), premised into wk-20a409b1.
-- stronger upward-symlink variant (`<root>/a/b/link -> <root>` + `..` escapes
-  ABOVE root; one non-deterministic probe) → folded into wk-20a409b1 test scope.
-- ADR-008 overclaim → KNOWN DEFECT banner (ADR_AMEND).
-- SEVERITY NUANCE: the fsguard/pathscope/file trio is imported by NO runtime
-  code and NO example (tr-9737e935), so the escape is a real P0 IN THE LIBRARY
-  but LATENT — not a live production path until wired in. Sequence: FIX
-  wk-20a409b1 BEFORE Phase-1 guard-wiring (already encoded: task #6 blocked by #3).
-- ADR-009 soft note (no amend needed): MarkReadRange/CheckEditable exists+tested
-  but is NOT wired into pkg/tools/file; the region guard is dormant. ADR-009
-  discloses wiring as follow-up, so borderline, not a hard overclaim.
-
----
+(charter §7). Last updated: 2026-07-12. HEAD at handoff: d26ab5c.
 
 ## Bootstrap (30 seconds)
 
-1. Read `AGENTS.md` (binding rules; §8 design-review/evaluations discovery,
-   §9 ledger discovery).
-2. `scripts/truth queue` — empty means carry on.
-3. `scripts/truth ready` — the unblocked work frontier.
-4. Before editing any file: `scripts/truth impact <path>` — it names the
-   claims your edit will stale and the work items that get HELD.
+1. Read `AGENTS.md` (binding rules; §8 design-review/evaluations, §9 ledger).
+2. `scripts/truth ready` — THE authoritative plan (open ∧ deps closed ∧
+   premises live). The task tool, if any, only mirrors this.
+3. `scripts/truth queue` — what needs a verifier's attention.
+4. Before editing a file: `scripts/truth impact <path>` — names the claims your
+   edit will stale and the work it will HOLD.
 
-## Current focus
+## Regime (how work is planned here)
 
-- **pathscope escape — FIXED** (wk-20a409b1 closed at commit 5586595, claim
-  tr-d99911b4). Canonical now resolves symlinks in kernel order and fsguard
-  writes only the canonical path; 4 escape variants refuse, guarded by
-  `TestScopedWrite_*` in the normal suite. Residuals (open, documented):
-  ADR-010 TOCTOU + symlink-swap-at-open (no O_NOFOLLOW), unscoped bundles.
-- **NEXT / actionable — wk-0eaee8d9** (ADR-011 phase 1 membrane). Spec:
-  `internal/runtime/docs/specs/membrane-hardening.md`. READY — re-filed on the
-  five LIVE premises (old wk-dcc7a92d closed as superseded; its two diverged
-  premises could not be detached). Practically gated on wk-20a409b1: fix the
-  guard escape BEFORE wiring the trio.
-- Sequence after: wk-39850a5b → wk-0bdbd4e4 → wk-7baee278 (rationale: ADR-011).
+- The **ledger is the plan.** `truth ready` is authoritative; `truth start
+  wk-…` a work item before dispatching it; `truth done wk-… --claim` on finish.
+- **Single ledger writer** when sessions run concurrently (append-race safety):
+  the orchestrating session files claims/verdicts; others hand it the text.
+- **No self-verify.** The session that files/authors a claim must not verify it;
+  route to a fresh session (`truth dispatch <id>`).
+- Template: truth-ledger `e1647e2` (v0.5.7+; `.copier-answers.truth-ledger.yml`).
+  Use `copier update --vcs-ref=HEAD` (NOT `copier copy` — it needs a tty).
+  New gates live: quantifier/scope intake (`--scope-ok`), evidence allowlist
+  `.truth/evidence-allow` (`--evidence-unsafe-ok`), backdating detection,
+  `diverge --mechanical`. Canary is 80 faults.
 
-## Verification debt (independent verifier pass — 2026-07-12)
+## Done (shipped + closed)
 
-> UPDATE (post-fix): the wk-20a409b1 commit (5586595) mechanically re-staled 6
-> fsguard-spec claims (tr-00eded8e, tr-16104518, tr-1726ec57, tr-b9e3683f,
-> tr-d38998db, tr-dc6b174d) — all still TRUE (suites green), so `spec-health`
-> now FAILS on the fsguard spec pending re-dispatch. Plus tr-d99911b4 (fix
-> completion, unverified). These are task #5; do NOT self-verify. Phase 1
-> premises are all live, so this does not block Phase 1.
+fsguard/pathscope/file guard layer (ADR-007..010); the **pathscope+fsguard
+symlink escape FIXED** (wk-20a409b1, commit 5586595, kernel-order symlink
+resolution + canonical-path I/O; regression guard `TestScopedWrite_*`);
+**Phase 1a membrane** changes 1–4 (wk-0eaee8d9, commit 8332e65: typed
+tool-result envelope, static model-facing errors, panic-recover + per-tool
+timeout, uuid SideEffect); three SDK evaluations → ADR-011 + AP/PR checklist
++ PAT registry + `docs/evaluations/`; truth-ledger installed and upgraded.
 
-All 12 dispatched claims now carry a filed verdict (10 agree, 2 diverge).
-- Agreed (evidence supports text): tr-1726ec57, tr-dc6b174d, tr-00eded8e,
-  tr-d38998db, tr-16104518, tr-b9e3683f, tr-42e5b4c3, tr-e1d73540,
-  tr-166b071c, tr-9737e935. The four former stale claims are refreshed, so
-  `spec-health` on the fsguard spec now passes.
-- Diverged, now CORRECTED (originals terminal, replacements filed):
-  tr-6cb4d1a2 → **tr-466f3e3e** (was "5 sites"; really 6, in two files —
-  count-free text now), and tr-09eeed62 → **tr-799b362d** (evidence grep
-  re-scoped to `.go` so it no longer matches prose in a spec `.md`; finding
-  "no recover() in code" still true). Both corrections are `unverified` —
-  dispatch them.
-- **Pathscope escape now filed**: tr-8f969e5d (P0, verified) + wk-20a409b1
-  (fix, READY). See Current focus.
-- FIELD-FEEDBACK for the ledger (see planning eval doc): a diverged premise
-  permanently HOLDs its work item even after the claim is corrected under a new
-  id — no premise-detach verb exists. RESOLVED here by re-filing Phase 1 as
-  wk-0eaee8d9 on the live corrections and closing wk-dcc7a92d as superseded; the
-  limitation stands as real template feedback (a premise-supersede verb would
-  avoid the id churn).
-- Command per id, in a fresh session: `scripts/truth dispatch <id>`.
+## Authoritative frontier (from `truth ready`, 2026-07-12)
 
-## Known repo oddities
+READY now (no coupling → quick wins first):
+- **wk-92a000e0** — extend static errors to 2 sub-agent sites (AP-05;
+  temporal agent_workflow.go:1544, local agent_loop.go:635). Small.
+- **wk-8468e36a** — P2 guard-tools hardening (read_file size cap,
+  CreateExclusive cleanup on write-error, pathscope case-fold). Small.
+- **wk-ceaabb07** — Phase 1b: wire guard trio + Snapshot into runtime
+  (architectural; COUPLES with Phase 2 — wiring before convergence = rework).
+- **wk-7baee278** — Phase 4 platform hygiene.
+- **wk-e97339d3** — DECISION: ADR namespace collision (see below).
 
-- Session transcript archived to `docs/archive/session-transcript-2026-07.md`
-  (was `docs/reference/code-review.md`; archive = gate-exempt, non-maintained).
-- Template: truth-ledger v0.5.7 (copier ref `543d549`; tags upstream lag
-  main — trust `.copier-answers.truth-ledger.yml`, not `git ls-remote`).
-- `jsonschema` is not installed (host Python 3.14 pip is broken); drift
-  detector runs via fallback.
+HELD:
+- **wk-39850a5b** — Phase 2 (converge dual loop). Premise tr-e1d73540 STALE
+  (Phase 1a edited both loops). Still TRUE (both loops exist) → needs
+  RE-VERIFICATION (verifier session), then Phase 2 unblocks.
+- **wk-0bdbd4e4** — Phase 3, deps on Phase 2.
+
+## Verification debt (verifier session only — `scripts/truth queue`)
+
+11 stale/diverged claims await re-dispatch; all still true (suites green),
+mechanically staled by fix/membrane commits. Priority: **tr-e1d73540**
+(unblocks Phase 2). Then the Phase-1a completions (tr-97c678ec, tr-e8195632,
+tr-fdc3a4bb, tr-f4c87e4e), fix completion tr-d99911b4, sub-agent finding
+tr-33b577c9 (premise of wk-92a000e0), and the earlier fsguard-spec set.
+`truth dispatch <id>` in a fresh session; that clears `spec-health` red too.
+(tr-8f969e5d / tr-3ef6f8ff are stale-because-FIXED — leave them, historical.)
+
+## Open decisions / oddities
+
+- **wk-e97339d3 (ADR collision):** template ledger ADRs 007-012 now clash by
+  number with project ADRs 007-011. Cannot renumber ours (immutable ledger
+  refs); template re-adds 0NN each update. Needs a template-side convention
+  (LADR-NNN / docs/adr/ledger/). Safe interim: relocate the (not-README-linked)
+  template ADR files to docs/adr/ledger/.
+- **Phase 1b vs Phase 2 sequencing:** recommend Phase 2 FIRST (converge, then
+  wire once), but Phase 2 is HELD on re-verification — so quick wins
+  (wk-92a000e0, wk-8468e36a) are the clean next dispatch meanwhile.
+- Sub-agent residual (tr-33b577c9) and P2s are honest follow-ons to shipped work.
+- `jsonschema` not installed (host Python 3.14 pip broken); drift detector
+  runs via fallback — install on a working interpreter to fully arm it.
+- Transcript archived at `docs/archive/session-transcript-2026-07.md`.
