@@ -1002,6 +1002,13 @@ def validate_events(events):
             if "scope_basis" in p and not p["scope_basis"]:
                 errors.append(f"line {n}: empty scope_basis (ADR-007: the "
                               "override carries a sentence, not a boolean)")
+            if "overridden_duplicates" in p:
+                od = p["overridden_duplicates"]
+                if (not isinstance(od, list) or not od
+                        or any(not ID_RE.match(str(c)) for c in od)):
+                    errors.append(f"line {n}: overridden_duplicates must be a "
+                                  "non-empty list of tr-hex8 ids (MEDIUM-1: "
+                                  "the --duplicate-ok trace)")
             if "screened" in p.get("evidence", {}) \
                     and not isinstance(p["evidence"]["screened"], bool):
                 errors.append(f"line {n}: evidence.screened must be a "
@@ -1205,12 +1212,17 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
         sys.exit("truth: claim text must be non-empty -- an assertion with "
                  "no sentence cannot be verified, diverged from, or cited "
                  "(schema: text minLength 1)")
-    if not duplicate_ok:
-        similar = duplicate_conflicts(text, claims)
-        if similar:
-            lines = "\n".join(f"  {cid}: {t}" for cid, t in similar)
-            sys.exit("truth: refusing near-duplicate of active claim(s) (G8):\n"
-                     f"{lines}\nRe-file with --duplicate-ok if genuinely distinct.")
+    # G8 duplicate gate (MEDIUM-1 backport): compute conflicts
+    # UNCONDITIONALLY so a --duplicate-ok override records which active
+    # claims it declared distinct from, instead of vanishing silently
+    # (unlike scope_basis/screened, which self-record).
+    similar = duplicate_conflicts(text, claims)
+    if similar and not duplicate_ok:
+        lines = "\n".join(f"  {cid}: {t}" for cid, t in similar)
+        sys.exit("truth: refusing near-duplicate of active claim(s) (G8):\n"
+                 f"{lines}\nRe-file with --duplicate-ok if genuinely distinct.")
+    overridden_duplicates = sorted(cid for cid, _ in similar) \
+        if (similar and duplicate_ok) else []
 
     conflict = quantifier_scope_conflict(text, evidence_cmd)
     if conflict and not scope_basis:
@@ -1250,6 +1262,8 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
                "evidence_paths": paths}
     if scope_basis:
         payload["scope_basis"] = scope_basis
+    if overridden_duplicates:
+        payload["overridden_duplicates"] = overridden_duplicates
 
     if evidence_class == "VERIFIED":
         err = verified_intake_error(evidence_cmd, paths, ttl_days,
