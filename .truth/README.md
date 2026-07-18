@@ -81,9 +81,17 @@ claim text ("only", "no … anywhere", "the repo") over a scoped evidence
 command (`--include`, path arguments, `cd`) is refused unless
 `--scope-ok "<one sentence>"` states why the scope covers the
 quantifier (stored as `scope_basis`, attackable by verifiers);
-dead-tripwire paths — a whitespace-containing entry with no comma, or a
-literal path matching zero tracked files (INV-M, v0.5.4; explicit globs
-exempt; applies to every evidence class carrying paths); then, for
+statically dead-tripwire paths — a whitespace-containing entry with no
+comma, a **literal** path matching zero tracked files, or a **glob** over
+a statically-unreachable namespace (INV-M, v0.5.4; ADR-024). A glob over a
+*reachable* namespace is exempt because it is *dormant, not dead* — it
+fires when the namespace fills (ADR-023) — but a glob that is absolute,
+ends in `/`, has a `.`/`..`/empty component, or starts with `.git/` can
+never match a repo-relative diff path and is refused (`.git*` and
+`.github/**` are reachable and still pass). The one residual that is *not*
+statically decidable is a tracked **symlink** literal, which git tracks as
+an immutable link, so editing its target never fires — watch real,
+reachable paths; applies to every evidence class carrying paths); then, for
 VERIFIED: missing evidence command, neither paths nor TTL, no commit to
 anchor to, the evidence-command safety screen (ADR-009, v0.6 — quote-aware: every
 pipeline segment's program must be a bare name in
@@ -179,12 +187,21 @@ the snapshot cache is deliberately unbuilt until that warning fires).
 1. `.gitattributes` already sets `.truth/claims.jsonl merge=union`.
 2. Run `bash scripts/install-hooks.sh` after every `git init`/`git clone`
    (local hooks do not survive clones), or use CI instead — one of the
-   two MUST exist.
+   two MUST exist. This is the *commit gate* (`check-truth`); without it
+   INV-A/INV-B/INV-G/INV-N and the ADR-008 order detections do not run and
+   the ledger's append-only guarantee is unenforced. For CI, name the gate
+   scripts (`check-truth`, `invalidate-scan`) in a workflow `doctor` greps
+   (`.github/workflows/*`, `.gitlab-ci.yml`, `.circleci/config.yml`,
+   `Jenkinsfile`, …) so the installation stays decidable.
 3. `AGENTS.md` already carries the discovery snippet — copy it into
    `CLAUDE.md`, `.cursorrules`, `.github/copilot-instructions.md`, etc.
    too (those are the exact paths `truth doctor` checks).
 4. `pip install jsonschema` — required so the drift detector runs armed.
-5. `scripts/truth doctor` — installation must pass.
+5. `scripts/truth doctor` — installation must pass. It exits 1 (fails)
+   unless, for each gate, an active hook OR a CI config naming the gate
+   script exists; the CI arm is self-certified (doctor greps for the name,
+   it cannot run your pipeline). A clean exit 0 is the decidable proof the
+   MUST in step 2 holds (ADR-025).
 6. `bash scripts/truth-canary.sh` — every fault CAUGHT, or stop.
 
 ## Work kernel (ADR-002, v0.5)

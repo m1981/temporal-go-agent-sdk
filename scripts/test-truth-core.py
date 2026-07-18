@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -307,6 +308,95 @@ class TestIntake(unittest.TestCase):
         self.assertEqual(
             tm.dead_literal_paths(["a.sh", "missing.sh", "docs/*.md"], tracked),
             ["missing.sh"])
+
+    def test_dead_literal_is_the_decidable_case(self):
+        """ADR-023 (H5): the gate decides STATIC deadness of LITERALS only.
+        A literal has exactly one referent, so a zero-match literal can
+        never fire and is refused; a glob names a namespace that can fill,
+        so it is exempt even at zero current matches (dormant, not dead).
+        The lone residual is a tracked symlink literal -- it IS in the
+        tracked set, so the membership check passes; the gate is blind to
+        the fact that git tracks the link, not its target (ADR-023 leaves
+        this to guidance: watch real paths)."""
+        tracked = ["a.sh", "link.txt"]        # link.txt stands in for a tracked symlink
+        # a literal absent from the tracked set is statically dead -> refused
+        self.assertEqual(tm.dead_literal_paths(["missing.sh"], tracked),
+                         ["missing.sh"])
+        # a glob is never refused for zero current matches -- it is dormant
+        self.assertEqual(tm.dead_literal_paths(["src/ghost/*.py"], tracked), [])
+        # residual: a tracked symlink literal passes the membership check
+        self.assertEqual(tm.dead_literal_paths(["link.txt"], tracked), [])
+
+    def test_dead_glob_paths_refuses_unreachable(self):
+        """ADR-024 (H5 follow-up): a glob is exempt from the dead-literal
+        gate, but a glob matching no path git diff could emit is a dead
+        tripwire all the same. git-diff paths are repo-relative, normalized,
+        never under .git -- so an absolute pattern, a trailing slash, a
+        '.'/'..'/empty component, or a leading '.git' component is dead.
+        These are exactly the shapes an adversarial verifier found slipping
+        the exemption; each is flagged."""
+        for g in ["/etc/*.conf", "zone/*/", "a*/", "../*.txt", "./src/*.py",
+                  "a/./b*.py", "dbl//*.txt", ".git/*", ".git/**"]:
+            self.assertEqual(tm.dead_glob_paths([g]), [g], g)
+
+    def test_dead_glob_paths_keeps_reachable(self):
+        """ADR-024: SOUND, not complete -- no false refusals. Every glob
+        over a reachable namespace passes, including the two that look like
+        the dead shapes but are not: '.git*' matches .gitignore, and
+        '.github/**' is an ordinary tracked directory."""
+        for g in ["src/**", "src/*/test.py", "**/*.py", "*.txt", "src/?.py",
+                  "a/b*.py", "**", "*", ".git*", ".github/**"]:
+            self.assertEqual(tm.dead_glob_paths([g]), [], g)
+        # a plain literal is not this gate's concern (dead_literal_paths owns it)
+        self.assertEqual(tm.dead_glob_paths(["src/main.py"]), [])
+
+    def test_ci_gate_names_detects_and_misses(self):
+        """ADR-025 (H6): doctor decides the CI arm of the commit-gate MUST
+        by grepping known CI configs for the gate script name -- so a
+        CI-only repo passes instead of false-failing. A workflow naming the
+        gate is found (under .github/workflows and at top-level CI paths);
+        an unrelated file is not; a repo with no CI config yields None."""
+        with tempfile.TemporaryDirectory() as root:
+            wf = os.path.join(root, ".github", "workflows")
+            os.makedirs(wf)
+            # no CI naming the gate yet
+            self.assertIsNone(tm.ci_gate_names("check-truth", root))
+            # an unrelated workflow does NOT satisfy the gate
+            with open(os.path.join(wf, "lint.yml"), "w") as f:
+                f.write("jobs:\n  lint:\n    steps:\n      - run: ruff .\n")
+            self.assertIsNone(tm.ci_gate_names("check-truth", root))
+            # a workflow naming the gate script IS found, and the path is returned
+            with open(os.path.join(wf, "truth.yml"), "w") as f:
+                f.write("jobs:\n  gate:\n    steps:\n      - run: bash scripts/check-truth.sh\n")
+            self.assertEqual(tm.ci_gate_names("check-truth", root),
+                             os.path.join(".github", "workflows", "truth.yml"))
+            # a top-level CI file (e.g. .gitlab-ci.yml) is scanned too
+            with open(os.path.join(root, ".gitlab-ci.yml"), "w") as f:
+                f.write("gate:\n  script: python scripts/truth invalidate-scan\n")
+            self.assertEqual(tm.ci_gate_names("invalidate-scan", root),
+                             ".gitlab-ci.yml")
+
+    def test_ci_gate_names_top_level_yaml_only(self):
+        """ADR-025 (H6 adversarial fix): CI runs only TOP-LEVEL *.yml/*.yaml
+        under .github/workflows/, so doctor must too -- a `disabled/` subdir
+        or a `.yml.disabled` rename is a gate CI never runs and must NOT
+        satisfy the MUST (else doctor reports a deliberately-off gate as OK)."""
+        with tempfile.TemporaryDirectory() as root:
+            wf = os.path.join(root, ".github", "workflows")
+            os.makedirs(os.path.join(wf, "disabled"))
+            # (a) workflow in a subdirectory -- GitHub never runs it
+            with open(os.path.join(wf, "disabled", "truth.yml"), "w") as f:
+                f.write("run: bash scripts/check-truth.sh\n")
+            self.assertIsNone(tm.ci_gate_names("check-truth", root))
+            # (b) rename-to-disable: the standard "turn this off" idiom
+            with open(os.path.join(wf, "truth.yml.disabled"), "w") as f:
+                f.write("run: bash scripts/check-truth.sh\n")
+            self.assertIsNone(tm.ci_gate_names("check-truth", root))
+            # (c) a genuine top-level .yaml (not just .yml) IS scanned
+            with open(os.path.join(wf, "gate.yaml"), "w") as f:
+                f.write("run: bash scripts/check-truth.sh\n")
+            self.assertEqual(tm.ci_gate_names("check-truth", root),
+                             os.path.join(".github", "workflows", "gate.yaml"))
 
 # ------------------------------------- quantifier-scope gate (ADR-007)
 
@@ -805,6 +895,29 @@ class TestInvalidation(unittest.TestCase):
         self.assertIsNone(tm.decide_invalidation(
             e, {"head": "h", "anchor_reachable": True,
                 "changed_files": ["other.py"], "diff_error": None}, NOW))
+
+    def test_empty_glob_is_dormant_not_dead(self):
+        """ADR-023 (H5): a glob matching zero tracked files at filing time
+        is EXEMPT from the intake dead-literal gate, and -- the crux --
+        still FIRES once its namespace fills, because the invalidator
+        re-evaluates the pattern against each scan's diff rather than
+        freezing its matches at filing time. So an empty glob is *dormant*,
+        not dead; the finding that 'an empty glob can never fire' is
+        refuted right here."""
+        glob = "src/ghost/*.py"
+        # (1) intake exempts the zero-match glob -- it has no single referent
+        self.assertEqual(tm.dead_literal_paths([glob], []), [])
+        e = entry(verified_p(evidence_paths=[glob]))
+        # (2) dormant while the namespace stays empty: an unrelated change misses
+        self.assertIsNone(tm.decide_invalidation(
+            e, {"head": "h", "anchor_reachable": True,
+                "changed_files": ["src/other/x.py"], "diff_error": None}, NOW))
+        # (3) fires the moment a matching file is created and diffed
+        d = tm.decide_invalidation(
+            e, {"head": "h", "anchor_reachable": True,
+                "changed_files": ["src/ghost/appeared.py"], "diff_error": None}, NOW)
+        self.assertEqual(d["label"], "paths changed")
+        self.assertEqual(d["payload"]["touched"], ["src/ghost/appeared.py"])
 
     def test_diff_error_fails_toward_distrust(self):
         e = entry(verified_p())
