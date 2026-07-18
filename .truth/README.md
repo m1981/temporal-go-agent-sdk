@@ -52,11 +52,21 @@ an **invalidation record**; only that record demotes the claim to
 `stale`. A TTL'd claim the scan has not visited is not stale, however old
 (ADR-019 — this is what keeps the fold pure and confluent). Duplicate
 claim and issue ids are first-wins (F6, ADR-006): a later append bearing
-an existing id is inert. `retracted` (claims) and `cancelled` (issues)
-are terminal and human-gated (ADR-011; the full requirement is stated
-under v0.6 solo-regime hardening below); `closed` is not terminal
-(work is cyclical). An `agree` verdict on a path-anchored claim advances
-its effective anchor, so re-verified claims stay live across scans.
+an existing id is inert. Status is ONE total function (ADR-020): each
+verdict/invalidation sets it last-writer-wins in `(ts, id, canon)` order
+(`agree→live`, `diverge→diverged`, `cannot_verify→cannot_verify`,
+`invalidation→stale`, `retracted→retracted`), EXCEPT `retracted` is
+absorbing — once folded to `retracted`, later setters are ignored (tested
+on the folded status, not `ts`). So `diverged`, `cannot_verify`, and
+`stale` are RECOVERABLE (a later `agree` returns them to `live`), while
+`retracted` (claims) and `cancelled` (issues) are terminal and
+human-gated (ADR-011; full requirement under v0.6 solo-regime hardening
+below); `closed` is not terminal (work is cyclical). Because two verdicts
+carry distinct ids and the order is total, verdict ordering is confluent
+— backdating a verdict only lowers its key (it cannot resurrect a claim a
+later honest `agree` couldn't) and trips an ADR-008 warning; not a
+C1-style hole (H3, ADR-020). An `agree` verdict on a path-anchored claim
+advances its effective anchor, so re-verified claims stay live across scans.
 
 Intake gates, in refusal order: empty claim text (v0.5.5); near-duplicate
 of an active claim (Jaccard token overlap ≥ 0.6; `--duplicate-ok`

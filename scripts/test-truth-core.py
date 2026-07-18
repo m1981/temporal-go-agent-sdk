@@ -110,6 +110,71 @@ class TestFold(unittest.TestCase):
         self.assertEqual(claims["tr-00000001"]["status"], "retracted")
         self.assertEqual(claims["tr-00000001"]["status_ts"], TS)  # unchanged
 
+    def test_negative_verdicts_are_recoverable(self):
+        """ADR-020 (H3): diverged, cannot_verify, and stale all recover to
+        live via a later agree -- only retracted is terminal."""
+        for kind, payload in (
+            ("verdict", {"claim": "tr-00000001", "verdict": "diverge", "basis": "b"}),
+            ("verdict", {"claim": "tr-00000001", "verdict": "cannot_verify", "basis": "b"}),
+            ("invalidation", {"claim": "tr-00000001", "commit": "abc1234", "reason": "x"}),
+        ):
+            claims, _ = tm.fold(events(
+                rec("claim", claim_p()),
+                rec(kind, payload, rid="tr-00000002"),
+                rec("verdict", {"claim": "tr-00000001", "verdict": "agree",
+                                "basis": "rechecked"}, rid="tr-00000003",
+                    ts="2026-07-05T00:00:00.000000+00:00")))
+            self.assertEqual(claims["tr-00000001"]["status"], "live", kind)
+
+    def test_retracted_absorbs_in_any_order(self):
+        """ADR-020: retracted wins whether earlier or later than another
+        verdict and independent of physical order -- set_status short-
+        circuits on the FOLDED status, not on ts."""
+        import itertools
+        claim = rec("claim", claim_p())
+        agree = rec("verdict", {"claim": "tr-00000001", "verdict": "agree",
+                                "basis": "b"}, rid="tr-0000000a",
+                    ts="2026-07-10T00:00:00.000000+00:00")   # LATER than retract
+        retr = rec("verdict", {"claim": "tr-00000001", "verdict": "retracted",
+                               "basis": "kill"}, rid="tr-0000000b",
+                   ts="2026-07-05T00:00:00.000000+00:00")    # EARLIER than agree
+        for perm in itertools.permutations([claim, agree, retr]):
+            claims, _ = tm.fold(events(*perm))
+            self.assertEqual(claims["tr-00000001"]["status"], "retracted", perm)
+
+    def test_verdict_precedence_is_confluent(self):
+        """ADR-020 (H3): the anti-C1 lock. Distinct-id verdicts on one
+        claim, folded in EVERY physical order, yield ONE status -- the
+        highest-key (ts,id,canon) setter wins, so backdating cannot change
+        the outcome. C1 broke confluence; the verdict path does not."""
+        import itertools
+        claim = rec("claim", claim_p())
+        agree = rec("verdict", {"claim": "tr-00000001", "verdict": "agree",
+                                "basis": "b"}, rid="tr-0000000a",
+                    ts="2026-07-05T00:00:00.000000+00:00")
+        cverif = rec("verdict", {"claim": "tr-00000001", "verdict": "cannot_verify",
+                                 "basis": "b"}, rid="tr-0000000b",
+                     ts="2026-07-08T00:00:00.000000+00:00")
+        diverge = rec("verdict", {"claim": "tr-00000001", "verdict": "diverge",
+                                  "basis": "b"}, rid="tr-0000000c",
+                      ts="2026-07-10T00:00:00.000000+00:00")
+        seen = set()
+        for perm in itertools.permutations([claim, agree, cverif, diverge]):
+            claims, _ = tm.fold(events(*perm))
+            seen.add(claims["tr-00000001"]["status"])
+        self.assertEqual(seen, {"diverged"})  # diverge@07-10 is the highest key
+        # The reviewer's worked example: cannot_verify@5 then backdated
+        # agree@3 -> cannot_verify (5 is the higher key), in every order.
+        cv5 = rec("verdict", {"claim": "tr-00000001", "verdict": "cannot_verify",
+                              "basis": "b"}, rid="tr-0000000d",
+                  ts="2026-07-05T00:00:00.000000+00:00")
+        ag3 = rec("verdict", {"claim": "tr-00000001", "verdict": "agree",
+                              "basis": "backdated"}, rid="tr-0000000e",
+                  ts="2026-07-03T00:00:00.000000+00:00")
+        for perm in itertools.permutations([claim, cv5, ag3]):
+            claims, _ = tm.fold(events(*perm))
+            self.assertEqual(claims["tr-00000001"]["status"], "cannot_verify", perm)
+
     def test_premise_map(self):
         _, premises = tm.fold(events(
             rec("premise", {"issue": "bd-x1", "claim": "tr-00000009"})))
