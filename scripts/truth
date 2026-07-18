@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""truth v0.9.2 -- append-only claims ledger with a native work kernel.
+"""truth v0.9.3 -- append-only claims ledger with a native work kernel.
+
+v0.9.3 (ADR-017, wk-eaa42782): supersede authority. Source: independent
+  review finding C3 (Critical), confirmed live -- retraction terminality
+  was defended only at the status layer. `truth premise --supersedes`
+  refused only live/unverified old premises and carried no human gate,
+  so an agent (no TRUTH_HUMAN, a normal verb, no forgery) could redirect
+  a HUMAN-retracted P0 premise to a fresh claim and release the work the
+  retraction was blocking -- the paper's "cannot be undone" promise spent
+  at the readiness layer. Fix: superseding a `retracted` premise now
+  requires the ADR-011 human gate (TRUTH_HUMAN + typed-id ack); the
+  mechanical dead states (stale/diverged/cannot_verify/missing) stay
+  ungated -- no human decided those. Amends ADR-013. Canary FAULT R11.
 
 v0.9.2 (independent spec review, MEDIUM-1/2/3): override auditability +
   cross-surface coherence. MEDIUM-1 (wk-00b8ee57): the --duplicate-ok
@@ -1912,6 +1924,19 @@ def cmd_premise(a):
                      "passes ready as-is -- supersede is for dead premises "
                      "(stale, diverged, retracted, cannot_verify, missing); "
                      "re-verify or diverge it first (ADR-013)")
+        # ADR-017 (C3): retraction is a HUMAN terminal veto (ADR-011).
+        # Redirecting a retracted premise out of an issue releases the
+        # work that veto was blocking -- the same class of act as the
+        # retraction, so it needs the same authority. The mechanical dead
+        # states (stale/diverged/cannot_verify/missing) stay ungated: no
+        # human decided those, so a low-friction redirect to the corrected
+        # claim is the intended flow. Without this, any agent could spend
+        # a human's P0 block via a normal CLI verb, no forgery needed.
+        if old and old["status"] == "retracted":
+            err = human_ack_error(a.supersedes,
+                                  "superseding a retracted premise")
+            if err:
+                sys.exit(err)
         payload["supersedes"] = a.supersedes
     rec = append_record("premise", payload)
     print(json.dumps(rec) if a.json else rec["id"])
