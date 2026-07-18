@@ -87,9 +87,18 @@ exempt; applies to every evidence class carrying paths); then, for
 VERIFIED: missing evidence command, neither paths nor TTL, no commit to
 anchor to, the evidence-command safety screen (ADR-009, v0.6 — quote-aware: every
 pipeline segment's program must be a bare name in
-`.truth/evidence-allow`; no command substitution; output redirection
+`.truth/evidence-allow`; no command substitution; no ASCII control
+character except tab — a newline is word-whitespace to the screen's
+`shlex` lexer but a statement separator to the executing `/bin/sh`, so
+the screen must tokenize like its executor or a hidden second command
+slips through into a verifier's recheck (ADR-021, H4); output redirection
 only to `/dev/null` or an fd dup (`2>&1`), so the pin-the-output
-convention keeps working;
+convention keeps working; an allowlisted program's own write/exec flags
+are refused by a per-program deny table — `find -exec/-execdir/-ok/-okdir/-delete/-fprint*/-fls`,
+`sort -o/--output/--compress-program`, and a few top-level `git` flags —
+but that table is a BLOCKLIST and cannot bound an interpreter or VCS, so
+`git`, `sed`, `awk`, and test runners are absent from the shipped
+allowlist by design and must not be added for evidence use (ADR-021);
 `--evidence-unsafe-ok` files a *screen failure* anyway with
 `evidence.screened=false`, and recheck then refuses to execute the
 command, ever — verification becomes manual; but a **missing** allowlist
