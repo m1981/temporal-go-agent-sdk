@@ -452,6 +452,35 @@ class TestEvidenceScreen(unittest.TestCase):
         self.assertIsNone(tm.screen_evidence_command(
             "grep -rn x . | sort | wc -l", ALLOW))
 
+    def test_screen_rejects_control_chars(self):
+        """ADR-021 (H4): a newline is word-whitespace to shlex but a
+        statement separator to /bin/sh (the executor), so a post-newline
+        program lands in argument position at screen time yet RUNS at
+        recheck. The screen refuses every ASCII control char except tab,
+        making its token stream a sound over-approximation of the shell's."""
+        for cmd in ("grep x /dev/null\ntouch PWNED",       # the bypass
+                    "grep x /dev/null # c\ntouch PWNED",    # comment + newline
+                    "grep x\rtouch PWNED",                  # carriage return
+                    "grep x\x0bfoo", "grep x\x0cfoo", "grep x\x7ffoo"):
+            self.assertIn("control character",
+                          tm.screen_evidence_command(cmd, ALLOW), repr(cmd))
+        # tab is word-whitespace to BOTH lexers -- legitimate, must pass
+        self.assertIsNone(tm.screen_evidence_command("grep\tx\tf.txt", ALLOW))
+
+    def test_arg_deny_covers_h4_gaps(self):
+        """ADR-021 (H4): the adversarial review found enumerable exec/write
+        flags on SHIPPED programs the deny table missed -- git lowercase
+        -o (only -O/--output were denied, so `git archive -o` wrote files)
+        and GNU `sort --compress-program=<cmd>` (an exec channel). Both
+        refused now; the table's contents are pinned against silent drift."""
+        self.assertIsNotNone(
+            tm.screen_evidence_command("git archive -o /tmp/pwn HEAD", ALLOW))
+        self.assertIsNotNone(tm.screen_evidence_command(
+            "sort --compress-program=touch -S1 f.txt", ALLOW))
+        self.assertLessEqual({"-o", "--output", "--compress-program"},
+                             tm.PROGRAM_ARG_DENY["sort"])
+        self.assertIn("-o", tm.PROGRAM_ARG_DENY["git"])
+
 class TestAcceptScreen(unittest.TestCase):
     """ADR-014: same structural screen, its own allowlist -- the refusal
     messages must name .truth/accept-allow and the accept escape hatch,

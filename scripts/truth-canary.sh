@@ -270,6 +270,18 @@ else
   ok "allowlisted program's exec/write flag refused (sort -o)"
 fi
 
+say "FAULT ES (ADR-021, H4): a newline-smuggled command must be refused (screen/executor tokenizer parity)"
+# shlex treats the newline as whitespace so 'touch' lands in argument
+# position (approved), but /bin/sh runs it as a second statement at
+# recheck. The screen must refuse the control character.
+if $T claim "widget cache newline probe" --class VERIFIED \
+     --evidence-cmd $'grep -q x watched.txt\ntouch PWNED_ES' --paths "watched.txt" \
+     --tier P2 --duplicate-ok >/dev/null 2>&1; then
+  miss "screen accepted a newline-smuggled command (ADR-021 bypass open)"
+else
+  ok "screen refused the newline-smuggled command (ADR-021 tokenizer parity)"
+fi
+
 say "FAULT T (INV-M): a dead evidence-path tripwire must be refused at intake"
 if $T claim "a and watched are fine" --class VERIFIED \
      --evidence-cmd "cat watched.txt" --paths "watched.txt fabricated.txt" \
