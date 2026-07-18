@@ -17,6 +17,16 @@ node), and a chain-into-cycle P→Q→R→Q resolves to Q (the cycle's entry
 point). The result is deterministic, independent of iteration count and
 of event order, and still passes through ADR-001's matrix — a cyclic
 redirect cannot bypass premise validity, it only fails to change it.
+Amended by: ADR-017 (2026-07-18, wk-eaa42782) — an independent review
+(C3, Critical) found the Decision's dead-state list below too broad for
+one state: `retracted` is a HUMAN terminal veto (ADR-011), and letting
+an ungated `truth premise --supersedes` redirect a retracted premise
+released the work that veto blocked — spending the paper's "cannot be
+undone" promise at the readiness layer, by any actor, no forgery. As of
+ADR-017 superseding a `retracted` premise requires the ADR-011 human
+gate (`TRUTH_HUMAN` + typed-id ack); the mechanical dead states
+(`stale`/`diverged`/`cannot_verify`/`missing`) below stay ungated as
+written. Canary R11.
 Date: 2026-07-13
 Supersedes: — (extends ADR-002's kernel; leaves ADR-001's matrix intact)
 

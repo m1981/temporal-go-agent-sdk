@@ -1086,6 +1086,31 @@ else
   miss "issue $WK_R10 still HELD after supersede"; PATH="/usr/bin:/bin" $T ready || true
 fi
 
+say "FAULT R11 (ADR-017, C3): superseding a RETRACTED premise needs the human gate"
+CID_R11=$($T claim "r11 database is safe to drop" --class UNVERIFIED --tier P0)
+WK_R11=$($T issue "r11 premised on a to-be-retracted fact" --premise "$CID_R11")
+TRUTH_HUMAN=1 TRUTH_HUMAN_ACK="$CID_R11" $T verdict "$CID_R11" retracted \
+  --basis "canary: human veto" >/dev/null 2>&1
+CID_R11B=$($T claim "r11 corrected statement" --class UNVERIFIED --tier P0)
+# (a) an agent (no TRUTH_HUMAN) must NOT redirect a retracted premise
+if $T premise "$WK_R11" "$CID_R11B" --supersedes "$CID_R11" >/dev/null 2>&1; then
+  miss "agent superseded a RETRACTED premise -- human veto spent without authority (C3)"
+else
+  ok "agent supersede of a retracted premise refused (ADR-017 human gate)"
+fi
+if PATH="/usr/bin:/bin" $T ready | grep -q "^$WK_R11"; then
+  miss "issue $WK_R11 released despite a retracted premise and no human authority"
+else
+  ok "issue $WK_R11 stays HELD -- the retraction's block survived the agent"
+fi
+# (b) the human (TRUTH_HUMAN + id-specific ack) MAY redirect it
+if TRUTH_HUMAN=1 TRUTH_HUMAN_ACK="$CID_R11" $T premise "$WK_R11" "$CID_R11B" \
+     --supersedes "$CID_R11" >/dev/null 2>&1; then
+  ok "human supersede of a retracted premise accepted (symmetric authority)"
+else
+  miss "human supersede of a retracted premise refused -- legitimate flow broken"
+fi
+
 say "FAULT AC1 (ADR-014): --accept-cmd with no accept-allow must fail closed"
 if $T issue "ac1 work" --accept-cmd "true" >/dev/null 2>&1; then
   miss "issue filed an acceptance oracle with no .truth/accept-allow"
