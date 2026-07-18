@@ -242,6 +242,25 @@ HALF_LIFE_MIN_OBS = 5  # FS-1: below this, intake suggests nothing (noise)
 
 # ------------------------------------------------------------ primitives
 
+def canon(ev):
+    """ADR-016 backport (C1): the canonical serialization of a record --
+    a deterministic function of content, identical for byte-identical
+    records, distinct for any field difference."""
+    return json.dumps(ev, sort_keys=True)
+
+def fold_key(ne):
+    """ADR-016 backport (C1): the fold's TOTAL order. (ts, id) alone is
+    not total -- a duplicate id carrying a copied (equal) ts ties both
+    keys, and a stable sort then resolves the tie by file position,
+    breaking confluence (INV-I). canon() is a content-derived third key,
+    so distinct records never tie and every event order -- including the
+    two a union merge can produce -- folds identically. Byte-identical
+    union-merge duplicates tie on all three and coincide. order_check
+    separately refuses a NON-identical equal-ts duplicate id at the gate.
+    Forwarded from the template (truth-ledger ADR-016, v0.9.1)."""
+    ev = ne[1]
+    return (ev.get("ts") or "", ev.get("id") or "", canon(ev))
+
 def tokens(text):
     return set(re.findall(r"[a-z0-9]+", text.lower()))
 
@@ -318,8 +337,7 @@ def fold(events):
         across subsequent invalidate-scans instead of re-staling forever.
     `retracted` remains terminal (G12).
     """
-    ordered = sorted(events, key=lambda ne: (ne[1].get("ts") or "",
-                                             ne[1].get("id") or ""))
+    ordered = sorted(events, key=fold_key)  # ADR-016 backport (C1): total order
     claims, premises = {}, {}
     def set_status(cid, status, ts):
         if claims[cid]["status"] == "retracted":
@@ -380,8 +398,7 @@ def fold_issues(events):
     while `closed` is not (work is cyclical; closing asserts completion,
     not falsity) -- that rule, unlike first-wins, does differ from claim
     folding and is decided in ADR-002."""
-    ordered = sorted(events, key=lambda ne: (ne[1].get("ts") or "",
-                                             ne[1].get("id") or ""))
+    ordered = sorted(events, key=fold_key)  # ADR-016 backport (C1): total order
     issues = {}
     for _, ev in ordered:
         kind, p = ev.get("kind"), ev.get("payload", {})
@@ -644,22 +661,30 @@ def order_check(events):
         ts_raw = ev.get("ts") or ""
         ts = parse_ts(ts_raw)
         if eid in first_seen:
-            f_ts_raw, f_line = first_seen[eid]
+            f_ts_raw, f_line, f_canon = first_seen[eid]
             # fold() orders by the raw ts STRING then id (a duplicate id
             # ties on id, so the ts string alone decides the winner). Test
             # substitution exactly as fold sorts -- string-comparing, not
             # parsing -- so a tz-naive or non-ISO forged ts cannot slip
             # past a parsed comparison the way it did before v0.6.2 (F2).
-            # Equal strings = the union-merge shape; stable sort keeps the
-            # genuine first-appended record, so it stays legal.
             if ts_raw < f_ts_raw:
                 errors.append(
                     f"line {n}: duplicate id {eid} with ts sorting before "
                     f"line {f_line}'s -- canonical-order substitution "
                     "(ADR-008): a later append may not sort before the "
                     "record it duplicates")
+            # ADR-016 backport (C1): an EQUAL ts + duplicate id is legal
+            # ONLY for the byte-identical union-merge shape; a copied ts
+            # with different content is the equal-ts substitution forgery.
+            elif ts_raw == f_ts_raw and canon(ev) != f_canon:
+                errors.append(
+                    f"line {n}: duplicate id {eid} with an EQUAL ts but "
+                    f"different content from line {f_line} -- equal-ts "
+                    "substitution (ADR-016): a copied timestamp ties the "
+                    "fold's order, so only a byte-identical union-merge "
+                    "duplicate may share both id and ts")
         elif eid:
-            first_seen[eid] = (ts_raw, n)
+            first_seen[eid] = (ts_raw, n, canon(ev))
         if ts and max_ts and cmp_ok(ts, max_ts) \
                 and (max_ts - ts).total_seconds() > SKEW_TOLERANCE_SECONDS:
             warnings.append(
@@ -679,8 +704,7 @@ def half_life_observations(events):
     order and the same status rules as fold(); fold stays authoritative
     for status, and test-truth-core cross-checks the two never disagree
     on final state. Returns a list of (tier, days_live) tuples."""
-    ordered = sorted(events, key=lambda ne: (ne[1].get("ts") or "",
-                                             ne[1].get("id") or ""))
+    ordered = sorted(events, key=fold_key)  # ADR-016 backport (C1): total order
     state = {}   # cid -> {"tier", "status", "since": datetime|None}
     obs = []
     verdict_map = {"agree": "live", "diverge": "diverged",
