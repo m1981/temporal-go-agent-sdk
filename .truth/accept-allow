@@ -1,0 +1,30 @@
+# Acceptance-command allowlist (ADR-014). One bare command name per line.
+#
+# Entries here EXECUTE REPOSITORY CODE at `done` time inside the closing
+# session -- that is their purpose. This list is deliberately separate
+# from .truth/evidence-allow (ADR-009), which must stay read-only:
+# reusing it would force an unsafe override on every real oracle and
+# teach the gate's own bypass.
+#
+# The structural screen still applies: no command substitution,
+# pipelines only of listed entries, output redirection only to /dev/null
+# or an fd dup. Programs are bare listed names -- OR (issue #7, v0.7.2)
+# an EXACT repo-relative path listed here (.venv/bin/python, ./gradlew):
+# a committed exact path bounds precisely which executable runs, which
+# is stronger than an interpreter bare-name. Absolute paths and '..'
+# segments never pass.
+#
+# The template ships this list EMPTY: which programs a work item may
+# cause a later session to run is a per-repository policy decision.
+# Typical conscious additions:
+#
+#   pytest        # suite oracle (verification)
+#   python3       # golden-diff runners: python3 exercises/.../runner.py
+#   bash          # gate scripts: bash scripts/spec-health.sh
+#   make          # make test
+#   npm           # npm test
+#   cargo         # cargo test
+#
+# Note that an interpreter entry (python3, bash) admits ANY repo script
+# as an oracle -- that breadth is usually the point, but it is a policy
+# you are accepting, not a default you inherited.

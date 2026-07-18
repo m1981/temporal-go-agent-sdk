@@ -27,6 +27,20 @@ ordinary work sessions (.git/truth-whisper.seen) is still accumulating.
 Trial also surfaced, unfixed: the deny reason's amend-flow hint reads
 as a bypass ritual to weaker models, and the consumer hook misbehaves
 in git worktrees.
+Amended by: note (2026-07-12) — both consumer-hook residuals above are
+now closed (scripts/truth-whisper.py + .pi/extensions/truth-whisper.ts):
+the deny reason names a human actor and no longer teaches a bypass
+(one voice with .githooks/pre-commit); the worktree crash is fixed by
+resolving the seen-cache via `git rev-parse --git-path` and wrapping the
+append (whisper fails OPEN, per this ADR). Building the gate surfaced a
+third, latent bug — the hook compared an abspath'd file against git's
+realpath'd root, so a symlinked path component (macOS /var, symlinked
+homes) made an in-repo file look external and bailed BEFORE the deny
+stage, i.e. deny failed OPEN; both harnesses now realpath both sides.
+The consumer hook, which has no template-canary home (ADR-003 rule 2),
+now has its own gate: scripts/test-whisper-hook.sh (deny voice, main +
+worktree whisper, injection-verified). The fatigue half of the adoption
+gate is still the only thing open.
 Originally: Proposed (2026-07-09; adoption gated on earning its keep in
 the pilot first, per the growth-gate discipline).
 Date: 2026-07-09

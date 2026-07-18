@@ -3,6 +3,18 @@
 Status: Accepted (2026-07-12, operator) — proposed 2026-07-11 in
 `docs/hardening-proposals-solo-regime.md`, implemented in CLI v0.6.0.
 Canary faults V1–V3.
+Amended by: field note (2026-07-13, second deployment,
+`docs/field-notes-sdk-session.md` item 1) — the gate keys on the
+*record's* `session`, so a single-writer/scribe coordination pattern
+misfires in both directions: a courier who authored the claim gets a
+genuinely independent `agree` refused, and a true self-verdict launders
+cleanly through any other session's hands. Operating rule: verifiers
+file their own verdicts (a read-only/plan-mode peer cannot be the
+verifier of record); where a scribe is unavoidable, it must file under
+the verifier's identity via `TRUTH_SESSION=<verifier-session>`, which
+the CLI already honors — no new `--verifier-session` flag, since it
+would duplicate the existing env override without adding trust
+(identity stays self-attested either way, this ADR's own F4 class).
 Date: 2026-07-11
 Supersedes: — (extends F4's norm→syntax conversion to the verdict seam)
 

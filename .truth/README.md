@@ -1,4 +1,4 @@
-# .truth — append-only claims ledger (v0.6.2)
+# .truth — append-only claims ledger (v0.9.0)
 
 > Reader: any agent or human about to assert, trust, or re-verify a fact about this repository | Enables: filing a claim in one command, and knowing which claims are still live before acting on them | Update-trigger: the record schema, invariants, or CLI contract change
 
@@ -39,7 +39,11 @@ validate` mirrors it in stdlib and the conformance corpus in
 
 Status is derived, never stored: a pure fold replays all events in
 `(ts, id)` order — a total order independent of file position, so
-union-merged branches derive identical status (confluence). Duplicate
+union-merged branches derive identical status (confluence). The fold
+sorts the raw `ts` string, so `ts` must be the canonical profile
+`YYYY-MM-DDTHH:MM:SS.ssssss+00:00` — fixed-width UTC microseconds,
+exactly what the CLI mints; any other offset, `Z` suffix, or precision
+fails `validate` (ADR-015: string order must equal time order). Duplicate
 claim and issue ids are first-wins (F6, ADR-006): a later append bearing
 an existing id is inert. `retracted` (claims) and `cancelled` (issues)
 are terminal and human-gated (ADR-011; the full requirement is stated
@@ -63,9 +67,14 @@ pipeline segment's program must be a bare name in
 `.truth/evidence-allow`; no command substitution; output redirection
 only to `/dev/null` or an fd dup (`2>&1`), so the pin-the-output
 convention keeps working;
-`--evidence-unsafe-ok` files anyway with `evidence.screened=false`, and
-recheck then refuses to execute the command, ever — verification becomes
-manual), and a nondeterministic evidence command (two intake runs must
+`--evidence-unsafe-ok` files a *screen failure* anyway with
+`evidence.screened=false`, and recheck then refuses to execute the
+command, ever — verification becomes manual; but a **missing** allowlist
+fails closed *even under* the override (a repo with no `evidence-allow`
+cannot file a VERIFIED evidence command at all — the F1 fail-closed
+lesson), so the override covers a screened-out program, not the absence
+of a policy to screen against), and a nondeterministic evidence command
+(two intake runs must
 hash identically; `--single-run` overrides). INFERRED requires `--basis`.
 
 ## v0.6 solo-regime hardening (docs/hardening-proposals-solo-regime.md)
@@ -122,7 +131,8 @@ the snapshot cache is deliberately unbuilt until that warning fires).
                                        gate, 008 order coherence, 009
                                        evidence-command screen, 010 session
                                        separation, 011 tombstones-need-a-
-                                       terminal, 012 divergence subtype
+                                       terminal, 012 divergence subtype,
+                                       013 premise supersede (v0.6.4)
 
 ## Install (day 1)
 
@@ -142,14 +152,22 @@ the snapshot cache is deliberately unbuilt until that warning fires).
 Issues can live in the same ledger as facts — no external tracker needed:
 
     scripts/truth issue "title" --premise tr-xxxx   # premise-at-birth
-    scripts/truth start wk-xxxx                     # claim it
+    scripts/truth start wk-xxxx                     # claim it (files 'claimed')
+    scripts/truth start wk-xxxx --release           # give it back: claimed -> open
     scripts/truth done wk-xxxx --basis "..." \
       --claim "<what the work made true>" --class VERIFIED \
       --evidence-cmd "..." --paths "..."            # claim-at-death
     scripts/truth ready                             # open ∧ deps closed ∧ premises valid
     scripts/truth issues                            # full board with derived status
+    scripts/truth premise wk-xxxx tr-new \
+      --supersedes tr-old                           # redirect a DEAD premise to its
+                                                    # corrected claim (ADR-013) — refused
+                                                    # while the old one still passes ready
 
-`closed` can be reopened (`done --reopen`); `cancelled` is terminal and
+Issue states form `open ⇄ claimed → closed`: `start` files `claimed`,
+`start --release` returns a claimed item to `open` (valid only from
+`claimed`, basis optional, not human-gated), `closed` can be reopened
+(`done --reopen`); `cancelled` is terminal and
 human-gated per ADR-011 — at your own terminal,
 `TRUTH_HUMAN=1 truth done wk-x --cancel --basis "..."` then type the id
 back when prompted; headless,
@@ -157,6 +175,23 @@ back when prompted; headless,
 External trackers still work through the seam (`TRUTH_TRACKER_CMD`,
 `--stdin`); `truth issues --ready-json` emits the same contract, so you
 can run both and diff. Full semantics: `docs/adr/002-native-work-kernel.md`.
+
+**Acceptance oracles (ADR-014, v0.7).** `issue --accept-cmd "<cmd>"
+[--accept-kind verification|validation]` declares an executable finish
+line at birth (default kind `verification` = suite/gate, "built right";
+`validation` = golden-diff, "built the right thing" — 12207's two V's).
+A plain `done` then runs the command from the repo root and refuses the
+close on non-zero exit; the close event records `accept: {executed,
+returncode}`, and validate rejects an executed acceptance with a
+non-zero returncode. Oracles execute repository code by purpose, so they
+are screened (ADR-009's screen, reused) against their **own** committed
+allowlist, `.truth/accept-allow` — never `evidence-allow`, which stays
+read-only. Missing list fails closed; the template ships it empty
+(header explains the policy trade). `--accept-unsafe-ok` files an
+unscreenable oracle with `screened: false` (done then refuses to execute
+it), and at `done` closes without running an oracle that *cannot* run,
+stamped `executed: false` — it never overrides an oracle that ran and
+failed. `--cancel`/`--reopen` skip the oracle. Canary FAULTS AC1–AC7.
 
 ## Feature specs (optional satellite, v0.5.1)
 
@@ -216,6 +251,57 @@ in an agent harness; a deny list for frozen paths; per-session dedup) is
 consumer policy and deliberately not shipped (ADR-003 rule 2) — wire it
 per ADR-005's Decision, and watch its adoption gate: whispers that
 change agent behavior, without fatigue.
+
+**Contradictions (issue #4, v0.9.0 — 29148 set consistency, rule R5).**
+
+    scripts/truth contradicts <tr-a> <tr-b> --basis "<why not both>"
+
+A DECLARED edge, mirroring premise — no NLP: the moment a gate needs a
+model to fire, it is a review, not a refusal. While an edge connects
+two claims whose statuses would otherwise both be live, BOTH derive
+**DISPUTED** — which behaves like diverged everywhere: premised work
+HOLDs, spec-health fails citers, both sides queue naming their
+counterpart. Any other endpoint state leaves the edge dormant. There is
+no arbitration verb: retract, supersede, or re-file one side and the
+edge stops firing. Intake refuses self-edges, unknown or retracted
+endpoints, and duplicate edges in either direction; note that a claim
+CONTRADICTING an existing one is usually also its near-duplicate, so
+filing the second side legitimately takes `--duplicate-ok` — that is
+the flag's honest use, not a bypass. Canary FAULTS C1–C5.
+
+**Baselines (issue #3, v0.8.0 — ISO 10007 set-level status accounting).**
+
+    scripts/truth baseline <ref> [--json]      # the frozen status account
+    scripts/truth baseline <a> --diff <b>      # release-notes delta
+
+`baseline <ref>` folds the ledger as it stood at any git ref (tag, sha,
+HEAD) into a deterministic snapshot — claims by status/tier, issues by
+state, sorted id lists; `--json` redirected to a file and committed IS
+the persisted baseline artifact (the CLI deliberately persists
+nothing). `--diff` folds two refs and prints born records, status
+transitions grouped `from->to`, and **DISAPPEARED** records — a record
+present at the older ref and absent at the newer is impossible between
+ancestor and descendant of an append-only file, so it means rewritten
+or divergent history: 10007's omission, caught by exactly the
+comparison the standard prescribes, exit 5 (gateable). Exit 2 =
+unreadable ref. Canary FAULTS BL1–BL4.
+
+**The backward slice (issue #5, v0.7.1).**
+
+    scripts/truth impact --inverse [--under DIR] [--exclude PREFIX]...
+
+flips the question: which tracked files does NO active claim watch? —
+the 24765 backward trace a curation-only ledger cannot otherwise ask.
+Joins `git ls-files` against the evidence-path globs of every
+non-retracted claim (stale/diverged still watch — that is knowledge
+needing re-check, not absence; only retraction kills a watch), same
+matcher by the same decree. Exit 0 = scope fully watched, 4 = dark
+files listed on stdout (distinct from forward's 3, so satellites gate
+each separately), 2 = the scope matched nothing (a typo'd `--under`
+must refuse, never read as a clean audit). Expect noise on a first run
+(lockfiles, assets): `--exclude` is the pressure valve; module
+inventories and dark-file triage (adopt/attic/delete) are downstream
+satellites' work, not this verb's. Canary FAULTS W5–W8.
 
 ## Claim discipline (earned lessons)
 

@@ -4,6 +4,19 @@ Status: Accepted (2026-07-08, Michal; implemented in v0.5)
 Amended by: ADR-006 (2026-07-09) — the "update-by-refile" last-wins rule
 stated under **Records** below described a verb the CLI never implemented;
 `fold_issues` is now FIRST-WINS on duplicate ids, identical to `fold()`.
+Amended by: note (2026-07-18, wk-61752c4f) — an independent spec review
+(HIGH-3) found the `released` event listed in the **Records** enum but
+absent from **Status semantics** below, which spells out only
+`open → claimed → closed`. Precise rule, matching the shipped CLI:
+`released` transitions `claimed → open` — it hands a claimed item back
+to the ready pool. It is produced by `truth start <wk-id> --release`
+(the same verb that files `claimed`; the `--release` flag files
+`released` instead), is valid ONLY from `claimed` (the transition guard
+refuses it from any other state), takes an optional `--basis`, and is
+NOT human-gated (it asserts neither completion nor falsity, so unlike
+`cancelled` it needs no `TRUTH_HUMAN`). So the full state graph is
+`open ⇄ claimed → closed`, with `reopened` and `released` the two
+return-to-`open` edges (from `closed` and `claimed` respectively).
 Date: 2026-07-08
 Supersedes: — (narrows the role of the external-tracker default introduced
 with the v0.4.1 adapter seam; does not remove the seam)
@@ -75,6 +88,12 @@ Issue *status is derived by the fold, never stored* — exactly as claim
 status is. Re-filing an `issue` record with an existing id updates payload
 fields (fold: last write in `(ts, id)` order wins); status moves only
 through events. Dependency cycles fail loudly at filing time.
+> ⚠ **Superseded by ADR-006 (see `Amended by:` above).** This sentence's
+> "last write wins" is no longer accurate: `fold_issues` is now
+> FIRST-wins on duplicate ids (a later append with an existing id is
+> inert), identical to `fold()`. The "update-by-refile" verb it describes
+> was never implemented. Kept in the immutable body per the ADR-body
+> convention; this marker is the correction pointer.
 
 **Status semantics.** `open` → `claimed` → `closed`, with `reopened`
 returning to open: work is cyclical, so `closed` is NOT terminal — unlike

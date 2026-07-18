@@ -1,5 +1,171 @@
 #!/usr/bin/env python3
-"""truth v0.6.2 -- append-only claims ledger with a native work kernel.
+"""truth v0.9.2 -- append-only claims ledger with a native work kernel.
+
+v0.9.2 (independent spec review, MEDIUM-1/2/3): override auditability +
+  cross-surface coherence. MEDIUM-1 (wk-00b8ee57): the --duplicate-ok
+  override left no trace, unlike scope_basis/screened. The G8 gate now
+  computes the near-duplicate conflict unconditionally and stamps
+  `payload.overridden_duplicates` (the active claim ids the override
+  declared distinct from) -- attackable ledger content, schema + mirror
+  + corpus + canary FAULT I trace. MEDIUM-3 (wk-15335617): schema and
+  mirror now forbid `accept.returncode` on an unexecuted acceptance
+  (executed=false); README states the missing-allowlist fails-closed
+  exception; ADR-002's superseded last-wins sentence gets an inline
+  ADR-006 marker. MEDIUM-2 (wk-813b84d4) was doc-only (invariant-table
+  rows INV-O/P/Q, INV-H broadened). No fold or gate-decision change.
+
+v0.9.1 (ADR-016, wk-280e0b76): total fold order + equal-ts gate. Source:
+  independent spec review finding C1 (Critical) -- the fold's (ts, id)
+  order is NOT total: a duplicate id carrying a COPIED (equal) ts ties
+  both components, and Python's stable sort then resolves the tie by
+  file position -- the one thing section 1 promises the fold ignores.
+  ADR-008's order_check keyed on strictly-earlier ts, so an equal-ts
+  forgery passed validate, and a union merge could seat the tie in
+  either file order -> two repositories, two fold results, content
+  substitution on one side, validate green everywhere (INV-I falsified;
+  ADR-008's own named falsifier reached with NO backdated ts). Two
+  complementary fixes: (a) fold_key() appends canon() -- the canonical
+  record serialization -- as a third, content-derived sort key, so
+  distinct records never tie and every permutation folds identically;
+  (b) order_check refuses a duplicate id with equal ts and non-identical
+  content, the byte-identical union-merge shape (B2) still passing.
+  Canary FAULTS B5-B6; permutation + validate core tests.
+
+v0.9.0 (issue #4, wk-3a8a725f): `contradicts` -- 29148 set consistency
+  made syntax (conformance rule R5). Near-dup intake catches
+  restatement; nothing caught contradiction -- two incompatible live
+  claims coexisted until a human diffed them (field: two back-panel
+  formulas, two LEGRABOX width formulas). New record kind `contradicts`
+  {a, b, basis}: a DECLARED edge, mirroring premise -- no NLP, the
+  moment a gate needs a model to fire it is a review, not a refusal.
+  Fold: a post-pass over the UNDERLYING statuses -- for every edge
+  whose two endpoints would otherwise both be live, both derive
+  DISPUTED. Evaluating edges against pre-edge statuses (never
+  iteratively) keeps the fold confluent and makes multi-edge chains
+  order-independent; disputed status_ts advances to the edge ts when
+  later (safe as a string compare under ADR-015). DISPUTED behaves
+  like diverged downstream: premise_check blocks, spec-health fails
+  citers, queue lists BOTH sides naming the counterpart, impact stops
+  whispering for it; inverse still counts it as watching (knowledge in
+  dispute, not absence). Resolution needs no new verb: retract,
+  supersede, or re-file one side -- the edge stops firing the moment
+  either endpoint is not live, and a dormant edge (an endpoint
+  unverified/stale/dead) fires nothing. Intake refusals: unknown ids,
+  self-edge, duplicate edge (either direction), retracted endpoint
+  (already resolved), empty basis. Canary FAULTS C1-C5.
+
+v0.8.1 (ADR-015, wk-c7378976): canonical timestamp profile. Source: an
+  independent spec-only review (pi, 2026-07-17; findings HIGH-1 and
+  MEDIUM-4) -- the fold sorts the raw ts STRING, but nothing constrained
+  the string's form: schema format:date-time is annotative in draft-07,
+  and validate never looked. An honest non-CLI writer using `Z` or a
+  non-UTC offset would silently misorder events and break INV-I
+  confluence. Three moves, discharging ADR-008's deferred F5 check:
+  (a) the profile now_iso() always emitted -- fixed-width UTC
+  microseconds, YYYY-MM-DDTHH:MM:SS.ssssss+00:00 -- is mandated by
+  schema `pattern` and validate-mirror TS_RE in lockstep (FS-2 mutants
+  exercise both on every seed); (b) TRUTH_NOW overrides are normalized
+  to aware-UTC so the test hook cannot mint a nonconforming record;
+  (c) an HLC-degenerate clock-push at append bumps a real-clock record
+  1 microsecond past a ledger tail it would otherwise sort before,
+  bounded by ADR-008's skew tolerance (beyond it, the honest clock is
+  kept and the regression warning fires). Canary FAULTS TS1-TS3; corpus
+  fixtures for Z/offset/precision/naive forms.
+
+v0.8.0 (issue #3, wk-16a3bff7): `baseline` -- set-level status
+  accounting (ISO 10007). `baseline <ref>` reads the ledger at a git
+  ref (`git show`), runs the SAME fold, and emits the frozen set:
+  claims by status/tier, issues by state, with sorted id lists --
+  deterministic JSON, no volatile timestamps, so redirect-and-commit
+  gives an auditable artifact. `baseline <a> --diff <b>` folds both and
+  prints the delta in release-notes shape: born records (with their
+  b-status), status transitions grouped from->to, and DISAPPEARED
+  records -- in an append-only ledger a record present at an ancestor
+  and absent at a descendant means rewritten history, so disappearance
+  is an omission alarm (the loophole map's named failure mode) with its
+  own exit code 5, gateable. Exit 2 = unreadable ref (usage), 0
+  otherwise. Read-only, no fold change, no new record kind, no
+  persistence by the CLI (10007's baseline artifact is the caller's
+  redirect). Canary FAULTS BL1-BL4.
+
+v0.7.2 (issue #7, wk-75aa9735, owner decision 2026-07-17): path-form
+  accept-allow entries. First-consumer dogfood found the gap the same
+  day ADR-014 shipped: the repo's REAL suite interpreter is often
+  repo-local (.venv/bin/python, ./gradlew, node_modules/.bin/*), and
+  the screen's bare-name rule forced either a bash -c wrapper (which
+  launders the path past the screen) or the broadest interpreter entry.
+  Now an acceptance oracle's program may be a path IFF it exactly
+  equals a committed .truth/accept-allow entry, is repo-relative (no
+  leading /), and has no `..` segment -- an allowlisted exact path is
+  the opposite of arbitrary, and STRONGER than an interpreter bare-name
+  (it bounds which executable runs, not which language). The evidence
+  screen (ADR-009) keeps its unconditional path refusal: recheck is a
+  different trust seam and read-only stays the rule there. Canary
+  FAULT AC8.
+
+v0.7.1 (issue #5, wk-bd379821): `impact --inverse` -- the backward
+  trace (ISO/IEC/IEEE 24765 bidirectional traceability). Forward impact
+  answers "what knowledge does editing these paths endanger?"; inverse
+  answers "which tracked files does the ledger know nothing about?" --
+  the question a curation-only ledger cannot ask itself (field audit:
+  8 of 9 sampled modules untraced, invisible by construction). Joins
+  `git ls-files` against the union of evidence_paths globs of ACTIVE
+  claims -- every status except retracted: a stale claim still names
+  its paths (it needs re-verification, the file is not dark); only
+  retraction kills the watch. Same match_paths matcher as the scan and
+  forward impact (ADR-005: a second matcher implementation is
+  forbidden). Read-only, no fold change, no new record kind. Scoping:
+  --under <dir> plus repeatable --exclude <prefix>; anything smarter
+  (inventories, verdict classes) is a downstream satellite's job. Exit
+  0 when the scope is fully watched / 4 when dark files exist --
+  distinct from forward impact's 3 so satellites can gate on each
+  separately. Canary FAULTS W5-W8.
+
+v0.7.0 (ADR-014, wk-eb59c649, upstream issues #1+#2): acceptance oracles.
+  `truth issue --accept-cmd <cmd> [--accept-kind verification|validation]`
+  stores an executable finish line on the issue record at birth (the
+  author commits to it BEFORE doing the work, like scope_basis); `truth
+  done` executes it from the repo root and refuses the close on non-zero
+  exit -- "done" stops being the agent's word. Acceptance commands
+  execute repository code BY PURPOSE (pytest, exercise runners), so they
+  are screened against their own committed allowlist,
+  .truth/accept-allow, never ADR-009's read-only evidence-allow --
+  reusing that list would force an unsafe override on every real oracle,
+  teaching the bypass. Same structural screen (bare allowlisted names
+  per pipeline segment, no command substitution, no path-form programs),
+  fail-closed when the allowlist is absent, re-screened at done time
+  against the CURRENT allowlist. --accept-unsafe-ok at filing stamps
+  accept.screened=false; at done it closes WITHOUT executing an oracle
+  that CANNOT run (unscreened/unscreenable), stamped executed=false on
+  the event -- it never overrides an oracle that ran and failed.
+  --cancel and --reopen skip the oracle (killing failed work must not
+  require its finish line to pass). The two kinds keep 12207's two V's
+  distinct: verification = suite/gate ("built right"), validation =
+  golden-diff ("built the right thing"). Fold impact: none -- acceptance
+  is a gate at close, never a stored status. Canary FAULTS AC1-AC7.
+
+v0.6.4 (ADR-013, wk-8d966a5b): premise supersede -- `truth premise
+  <issue> <new-tr> --supersedes <old-tr>` appends an auditable redirect
+  the ready/impact folds honor, releasing work HELD by a premise that
+  died and was corrected under a new id (second-deployment finding:
+  before this, the only exit was cancel-and-refile, breaking every
+  reference to the old wk- id). Fold half is permissive and confluent
+  (last-wins per (issue, old) in (ts, id) order, applied AFTER
+  merge_premises so premise-at-birth links redirect too; chains follow
+  to a fixed point, cycles stop at first repeat). Intake half is
+  strict: replacement claim must exist, old must currently be a
+  premise of the issue, and a live/unverified premise is refused
+  (it passes ready as-is -- supersede is for dead premises). The
+  redirect RE-TARGETS ADR-001 validity, never bypasses it: the
+  replacement claim is judged by the same matrix. Canary R10.
+
+v0.6.3 (wk-968bc087): `doctor` warns when the ledger holds work-kernel
+  issue records but no discovery file names `truth ready` -- G2's
+  invisibility failure, work-kernel edition, found when this template's
+  own meta-repo documented the fact verbs but not the work verbs (the
+  claim guarding against a recurrence is tr-f8d1d042 in that ledger).
+  WARN, not FAIL: a facts-only ledger is legitimate; facts plus
+  invisible work is not. Canary TL-2.
 
 v0.6.2 (review findings F1-F5, independent Fable review of v0.6.0/v0.6.1):
   * F1 ADR-009: the evidence screen was bare-name only, so allowlisted
@@ -173,6 +339,7 @@ Stdlib only. Python 3.9+. POSIX (G5: documented limit).
 import argparse
 import fnmatch
 import hashlib
+import io
 import json
 import os
 import re
@@ -181,15 +348,17 @@ import statistics
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 LEDGER_REL = ".truth/claims.jsonl"
 PROMPT_REL = "prompts/truth-verifier.md"
 EVIDENCE_CLASSES = ("VERIFIED", "INFERRED", "UNVERIFIED")
 TIERS = ("P0", "P1", "P2")
 VERDICTS = ("agree", "diverge", "cannot_verify", "retracted")
-KINDS = ("claim", "verdict", "invalidation", "premise", "issue", "issue_event")
-STATUSES = ("unverified", "live", "stale", "diverged", "cannot_verify", "retracted")
+KINDS = ("claim", "verdict", "invalidation", "premise", "issue",
+         "issue_event", "contradicts")
+STATUSES = ("unverified", "live", "stale", "diverged", "cannot_verify",
+            "retracted", "disputed")
 ISSUE_EVENTS = ("claimed", "released", "closed", "reopened", "cancelled")
 ISSUE_STATUSES = ("open", "claimed", "closed", "cancelled")
 DISCOVERY_FILES = ("AGENTS.md", "CLAUDE.md", ".cursorrules",
@@ -198,6 +367,13 @@ DUPLICATE_THRESHOLD = 0.6
 QUEUE_AGE_WARN_DAYS = 14
 ID_RE = re.compile(r"^tr-[0-9a-f]{8}$")
 WK_ID_RE = re.compile(r"^wk-[0-9a-f]{8}$")
+# ADR-015: the canonical ts profile -- fixed-width UTC microseconds,
+# exactly what now_iso() emits. The fold sorts the raw ts STRING, so
+# string order equals time order ONLY on a fixed-width single-offset
+# form; Z-suffix, non-UTC offsets, and variable precision all break it.
+# Enforced in validate_events in lockstep with the schema's pattern
+# (FS-2 corpus holds the two together).
+TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+00:00$")
 # ADR-007: universal-quantifier lexicon (tokens matched word-level via
 # tokens(); phrases matched with word boundaries). Changed only together
 # with the Q-canary faults.
@@ -230,6 +406,10 @@ PROGRAM_ARG_DENY = {
 # anything beyond this is a clock regression worth a warning.
 SKEW_TOLERANCE_SECONDS = 300
 EVIDENCE_ALLOW_REL = ".truth/evidence-allow"
+# ADR-014: acceptance oracles execute repository code at `done` time --
+# their own allowlist, never the read-only evidence one.
+ACCEPT_ALLOW_REL = ".truth/accept-allow"
+ACCEPT_KINDS = ("verification", "validation")  # 12207's two V's
 # FS-3: the scale gate -- doctor warns when load+fold exceeds this;
 # the snapshot cache stays unimplemented until the warning fires.
 FOLD_LATENCY_WARN_MS = 200
@@ -243,21 +423,25 @@ HALF_LIFE_MIN_OBS = 5  # FS-1: below this, intake suggests nothing (noise)
 # ------------------------------------------------------------ primitives
 
 def canon(ev):
-    """ADR-016 backport (C1): the canonical serialization of a record --
-    a deterministic function of content, identical for byte-identical
-    records, distinct for any field difference."""
+    """The canonical serialization of a record -- a deterministic
+    function of content, identical for byte-identical records and
+    distinct for any field difference. Records are appended with the
+    same sort_keys=True dump, so this reproduces the on-disk bytes for a
+    CLI-written line."""
     return json.dumps(ev, sort_keys=True)
 
 def fold_key(ne):
-    """ADR-016 backport (C1): the fold's TOTAL order. (ts, id) alone is
-    not total -- a duplicate id carrying a copied (equal) ts ties both
-    keys, and a stable sort then resolves the tie by file position,
-    breaking confluence (INV-I). canon() is a content-derived third key,
-    so distinct records never tie and every event order -- including the
-    two a union merge can produce -- folds identically. Byte-identical
-    union-merge duplicates tie on all three and coincide. order_check
-    separately refuses a NON-identical equal-ts duplicate id at the gate.
-    Forwarded from the template (truth-ledger ADR-016, v0.9.1)."""
+    """ADR-016: the fold's TOTAL order. (ts, id) alone is not total --
+    a duplicate id carrying a copied (equal) ts ties on both components,
+    and a stable sort then breaks the tie by file position, the one
+    thing the fold must ignore to be confluent (INV-I). The third key is
+    canon(): distinct records never tie, so every event permutation --
+    including the two file orders a union merge can produce -- folds to
+    one state. Byte-identical records (git's union-merge duplicate, B2)
+    tie on all three keys and coincide, so which wins is immaterial.
+    order_check (a gate, not the fold) separately refuses a NON-identical
+    equal-ts duplicate id, so an attacker cannot use this key to pick a
+    substitution winner in a committed ledger."""
     ev = ne[1]
     return (ev.get("ts") or "", ev.get("id") or "", canon(ev))
 
@@ -337,8 +521,8 @@ def fold(events):
         across subsequent invalidate-scans instead of re-staling forever.
     `retracted` remains terminal (G12).
     """
-    ordered = sorted(events, key=fold_key)  # ADR-016 backport (C1): total order
-    claims, premises = {}, {}
+    ordered = sorted(events, key=fold_key)  # ADR-016: total, content-derived
+    claims, premises, edges = {}, {}, []
     def set_status(cid, status, ts):
         if claims[cid]["status"] == "retracted":
             return
@@ -346,7 +530,9 @@ def fold(events):
         claims[cid]["status_ts"] = ts
     for _, ev in ordered:
         kind, p = ev.get("kind"), ev.get("payload", {})
-        if kind == "claim":
+        if kind == "contradicts":
+            edges.append((p.get("a"), p.get("b"), ev.get("ts")))
+        elif kind == "claim":
             if ev["id"] in claims:
                 continue  # first claim wins; duplicates cannot reset status
             claims[ev["id"]] = {"claim": ev, "status": "unverified",
@@ -374,6 +560,28 @@ def fold(events):
                 set_status(c, "stale", ev.get("ts"))
         elif kind == "premise":
             premises.setdefault(p["issue"], []).append(p["claim"])
+    # Issue #4 (v0.9.0): the DISPUTED post-pass. Every edge is judged
+    # against the UNDERLYING statuses computed above -- never against
+    # statuses this pass itself changes -- so the result is independent
+    # of edge order and the fold stays confluent. An edge fires only
+    # while BOTH endpoints would otherwise be live; anything else
+    # (unverified, stale, diverged, dead, missing) leaves it dormant.
+    # status_ts advances to the edge ts when later (ADR-015 fixed-width
+    # timestamps make the string max well-ordered).
+    fires = [(a, b, ts) for a, b, ts in edges
+             if a != b  # hand-crafted self-edge: inert, never disputes
+             and claims.get(a, {}).get("status") == "live"
+             and claims.get(b, {}).get("status") == "live"]
+    for a, b, ts in fires:
+        for side, other in ((a, b), (b, a)):
+            e = claims[side]
+            e["status"] = "disputed"
+            if ts and ts > (e.get("status_ts") or ""):
+                e["status_ts"] = ts
+            e.setdefault("disputed_with", []).append(other)
+    for e in claims.values():
+        if "disputed_with" in e:
+            e["disputed_with"] = sorted(set(e["disputed_with"]))
     return claims, premises
 
 def age_days(entry, now):
@@ -398,7 +606,7 @@ def fold_issues(events):
     while `closed` is not (work is cyclical; closing asserts completion,
     not falsity) -- that rule, unlike first-wins, does differ from claim
     folding and is decided in ADR-002."""
-    ordered = sorted(events, key=fold_key)  # ADR-016 backport (C1): total order
+    ordered = sorted(events, key=fold_key)  # ADR-016: total, content-derived
     issues = {}
     for _, ev in ordered:
         kind, p = ev.get("kind"), ev.get("payload", {})
@@ -446,6 +654,41 @@ def merge_premises(a, b):
             out.setdefault(k, [])
             if c not in out[k]:
                 out[k].append(c)
+    return out
+
+def fold_supersedes(events):
+    """ADR-013: premise redirects, (issue, old_claim) -> new_claim,
+    last-wins in the same confluent (ts, id) total order every other
+    fold uses. A redirect is scoped to ONE issue: superseding a claim
+    for wk-A never touches wk-B's link to the same claim."""
+    ordered = sorted(events, key=fold_key)  # ADR-016: total, content-derived
+    out = {}
+    for _, ev in ordered:
+        p = ev.get("payload", {})
+        if ev.get("kind") == "premise" and p.get("supersedes"):
+            out[(p.get("issue"), p["supersedes"])] = p.get("claim")
+    return out
+
+def apply_supersedes(premises, supersedes):
+    """ADR-013: rewrite each issue's premise list through its redirect
+    chain (applied AFTER merge_premises, so premise-at-birth links in
+    the issue payload redirect too). Chains follow to a fixed point; a
+    cycle stops at the first repeat rather than looping. The result
+    still goes through join_ready's ADR-001 matrix -- a redirect
+    re-targets premise validity, it never bypasses it."""
+    if not supersedes:
+        return premises
+    out = {}
+    for iid, cs in premises.items():
+        kept = []
+        for c in cs:
+            cur, seen = c, set()
+            while (iid, cur) in supersedes and cur not in seen:
+                seen.add(cur)
+                cur = supersedes[(iid, cur)]
+            if cur not in kept:
+                kept.append(cur)
+        out[iid] = kept
     return out
 
 def native_ready_issues(issues):
@@ -558,7 +801,9 @@ def quantifier_scope_conflict(text, evidence_cmd):
 _SCREEN_SEPARATORS = frozenset((";", "|", "||", "&&", "&"))
 _SCREEN_PUNCT = frozenset("();<>|&")
 
-def screen_evidence_command(cmd, allowlist):
+def screen_evidence_command(cmd, allowlist, allow_rel=EVIDENCE_ALLOW_REL,
+                            missing_tail=None, unlisted_hint=None,
+                            allow_paths=False):
     """ADR-009: evidence commands re-execute later in a *verifier's*
     session (recheck) -- deferred code execution across the trust seam
     G11 protects. Static screen over a QUOTE-AWARE token stream (shlex
@@ -568,12 +813,18 @@ def screen_evidence_command(cmd, allowlist):
     allowlist; no command substitution; output redirection only to the
     bit bucket ('>/dev/null') or an fd dup ('2>&1') -- the pin-the-
     output convention depends on those. Input redirection (<) is
-    read-only and allowed. Returns an error string or None."""
+    read-only and allowed. Returns an error string or None.
+
+    ADR-014 reuses this screen verbatim for acceptance oracles via
+    screen_accept_command (a second screen implementation is forbidden
+    -- the F1/F5 drift lesson); only the allowlist and the two
+    list-naming messages differ."""
     if allowlist is None:
-        return ("no evidence-command allowlist at " + EVIDENCE_ALLOW_REL +
-                " -- the safety screen fails closed (ADR-009). Create it "
-                "(one command name per line; the template ships a "
-                "read-only default) before filing VERIFIED claims.")
+        return ("no command allowlist at " + allow_rel +
+                " -- the safety screen fails closed. " +
+                (missing_tail or "Create it (one command name per line; "
+                 "the template ships a read-only default) before filing "
+                 "VERIFIED claims (ADR-009)."))
     if "$(" in cmd or "`" in cmd:
         return ("command substitution ('$(' or backtick) is not "
                 "screenable (ADR-009)")
@@ -611,15 +862,33 @@ def screen_evidence_command(cmd, allowlist):
             continue
         if expecting_program:
             if "/" in tok:
+                # Issue #7 (v0.7.2, accept screen only): an ALLOWLISTED
+                # exact repo-relative path may run as an oracle -- the
+                # committed entry bounds precisely which executable, which
+                # is stronger than an interpreter bare-name. Absolute
+                # paths and `..` segments never pass; the evidence screen
+                # (allow_paths=False) keeps ADR-009's blanket refusal.
+                if allow_paths and tok in allowlist \
+                        and not tok.startswith("/") \
+                        and ".." not in tok.split("/"):
+                    expecting_program = False
+                    program = tok
+                    continue
                 return (f"program {tok!r} is a path, not a bare command "
-                        "name -- repo-local executables are not "
-                        "screenable (ADR-009)")
+                        "name -- " +
+                        ("add the exact repo-relative path to "
+                         f"{allow_rel} to admit it as an oracle; absolute "
+                         "paths and '..' never pass (issue #7, ADR-014)"
+                         if allow_paths else
+                         "repo-local executables are not screenable "
+                         "(ADR-009)"))
             if tok not in allowlist:
-                return (f"'{tok}' is not in {EVIDENCE_ALLOW_REL} (ADR-009). "
-                        "Add it there if it is read-only and you accept it "
-                        "re-running inside verifier sessions, or file with "
-                        "--evidence-unsafe-ok (recheck will then refuse to "
-                        "execute it).")
+                return (f"'{tok}' is not in {allow_rel}. " +
+                        (unlisted_hint or "Add it there if it is read-only "
+                         "and you accept it re-running inside verifier "
+                         "sessions, or file with --evidence-unsafe-ok "
+                         "(recheck will then refuse to execute it) "
+                         "(ADR-009)."))
             expecting_program = False
             program = tok
         else:
@@ -637,14 +906,36 @@ def screen_evidence_command(cmd, allowlist):
         return "dangling operator at end of command (ADR-009)"
     return None
 
+def screen_accept_command(cmd, allowlist):
+    """ADR-014: acceptance oracles execute REPOSITORY CODE at `done`
+    time inside the closing session -- that is their purpose, so
+    ADR-009's read-only rationale does not apply, but its structural
+    screen does: the committed .truth/accept-allow bounds WHICH programs
+    a work item filed in one session may cause a later session to run.
+    Same screen function, different allowlist (one implementation)."""
+    return screen_evidence_command(
+        cmd, allowlist, allow_rel=ACCEPT_ALLOW_REL,
+        missing_tail=("Create it (one command name per line; entries "
+                      "execute repository code at `done` time -- that is "
+                      "their purpose) before filing an --accept-cmd "
+                      "(ADR-014)."),
+        unlisted_hint=("Add it there if you accept it executing at `done` "
+                       "time inside the closing session, or file the issue "
+                       "with --accept-unsafe-ok (`done` will then refuse "
+                       "to execute the oracle) (ADR-014)."),
+        allow_paths=True)
+
 def order_check(events):
     """ADR-008: within one repository's history, file order is append
     order (INV-A prefix gate), so a backdated duplicate id is *visible*:
     it appears later in the file than the record it sorts before.
     Returns (errors, warnings). Errors: duplicate id with strictly
-    earlier ts (the canonical-order substitution attack); an identical
-    line duplicated by union merge carries an equal ts and passes, and
-    the stable fold sort keeps the genuine-first record winning.
+    earlier ts (the backdated substitution attack, ADR-008); duplicate
+    id with an EQUAL ts but non-identical content (the equal-ts
+    substitution forgery, ADR-016/C1 -- a copied timestamp ties the
+    fold's (ts, id) order, so file order alone would pick the winner and
+    two union-merge directions could disagree). A byte-identical line
+    duplicated by union merge shares id and ts legitimately and passes.
     Warnings only for clock regression beyond tolerance -- a branch
     ledger union-merged into main legitimately places older records
     after newer ones, and failing there would punish the exact merge
@@ -673,9 +964,15 @@ def order_check(events):
                     f"line {f_line}'s -- canonical-order substitution "
                     "(ADR-008): a later append may not sort before the "
                     "record it duplicates")
-            # ADR-016 backport (C1): an EQUAL ts + duplicate id is legal
-            # ONLY for the byte-identical union-merge shape; a copied ts
-            # with different content is the equal-ts substitution forgery.
+            # ADR-016 (C1): an EQUAL ts no longer passes on the ts test
+            # alone. Equal ts + duplicate id is legal ONLY for the git
+            # union-merge shape -- a byte-identical line. A duplicate id
+            # carrying a COPIED ts but different content is the equal-ts
+            # substitution forgery: it ties (ts, id) with the genuine
+            # record, so file order alone would decide the winner, and
+            # two union-merge directions can seat the tie both ways
+            # (non-confluence, INV-I). Refuse it; canon() equality is the
+            # byte-identity test the union-merge shape passes.
             elif ts_raw == f_ts_raw and canon(ev) != f_canon:
                 errors.append(
                     f"line {n}: duplicate id {eid} with an EQUAL ts but "
@@ -704,7 +1001,7 @@ def half_life_observations(events):
     order and the same status rules as fold(); fold stays authoritative
     for status, and test-truth-core cross-checks the two never disagree
     on final state. Returns a list of (tier, days_live) tuples."""
-    ordered = sorted(events, key=fold_key)  # ADR-016 backport (C1): total order
+    ordered = sorted(events, key=fold_key)  # ADR-016: total, content-derived
     state = {}   # cid -> {"tier", "status", "since": datetime|None}
     obs = []
     verdict_map = {"agree": "live", "diverge": "diverged",
@@ -856,6 +1153,10 @@ def queue_rows(claims, now):
             reason = "author/verifier diverged"
             if e.get("subtype") == "mechanical":
                 reason += " (mechanical: recipe changed, fact may hold)"
+        elif status == "disputed":
+            reason = ("declared contradiction with "
+                      + ", ".join(e.get("disputed_with", []))
+                      + " -- retract, supersede, or re-file one side")
         elif status == "stale" and tier in ("P0", "P1"):
             reason = "evidence invalidated"
         elif status == "cannot_verify" and tier == "P0":
@@ -900,6 +1201,82 @@ def impact_report(query_paths, claims, issues, premises):
     rows.sort(key=lambda r: (r["tier"] or "P9", r["claim"]))
     return rows
 
+def baseline_snapshot(events):
+    """Issue #3 (10007): the frozen status account of one fold. Counts
+    AND sorted id lists -- ids make diffs exact and give auditors the
+    drill-down; sorting plus sort_keys serialization makes the artifact
+    deterministic, so identical ledgers yield byte-identical baselines."""
+    claims, _ = fold(events)
+    issues = fold_issues(events)
+    c_ids, tiers = {}, {}
+    for cid, e in sorted(claims.items()):
+        c_ids.setdefault(e["status"], []).append(cid)
+        if e["status"] != "retracted":
+            t = e["claim"]["payload"].get("cost_tier") or "?"
+            tiers[t] = tiers.get(t, 0) + 1
+    i_ids = {}
+    for wid, e in sorted(issues.items()):
+        i_ids.setdefault(e["status"], []).append(wid)
+    return {"records": len(events),
+            "claims": {"by_status": {k: len(v) for k, v in sorted(c_ids.items())},
+                       "by_tier": dict(sorted(tiers.items())),
+                       "ids": dict(sorted(c_ids.items()))},
+            "issues": {"by_status": {k: len(v) for k, v in sorted(i_ids.items())},
+                       "ids": dict(sorted(i_ids.items()))}}
+
+def baseline_diff(a, b):
+    """Issue #3: the delta between two snapshots, release-notes shape.
+    Three classes per kind: born (in b only, with b-status), transitions
+    (both, status changed; grouped 'from->to'), and DISAPPEARED (in a
+    only) -- impossible between ancestor and descendant of an
+    append-only file, so its presence means rewritten or divergent
+    history: 10007's omission, caught by exactly the comparison the
+    standard prescribes. The caller escalates it (exit 5)."""
+    out = {}
+    for kind in ("claims", "issues"):
+        sa = {i: st for st, ids in a[kind]["ids"].items() for i in ids}
+        sb = {i: st for st, ids in b[kind]["ids"].items() for i in ids}
+        trans = {}
+        for i in sorted(sa.keys() & sb.keys()):
+            if sa[i] != sb[i]:
+                trans.setdefault(f"{sa[i]}->{sb[i]}", []).append(i)
+        out[kind] = {"born": {i: sb[i] for i in sorted(sb.keys() - sa.keys())},
+                     "transitions": dict(sorted(trans.items())),
+                     "disappeared": {i: sa[i]
+                                     for i in sorted(sa.keys() - sb.keys())}}
+    out["records_delta"] = b["records"] - a["records"]
+    return out
+
+def inverse_report(tracked, claims, under=None, excludes=()):
+    """Issue #5: the backward trace (24765). Returns {"dark": [paths],
+    "considered": n} -- the tracked files (optionally scoped to --under,
+    minus --exclude prefixes) matched by NO evidence_path glob of any
+    active claim. Active = every status except retracted: stale and
+    diverged claims still name their paths (knowledge needing re-check,
+    not absence of knowledge); a retracted claim's watch died with it.
+    Reuses match_paths -- the scan, forward impact, and this verb must
+    agree on what "watched" means or the three will drift apart
+    (ADR-005). Enumeration only: no module awareness, no auto-filing --
+    what to DO about a dark file (adopt/attic/delete) is a human verb
+    downstream."""
+    def scoped(path):
+        if under:
+            u = under.rstrip("/")
+            if path != u and not path.startswith(u + "/"):
+                return False
+        for ex in excludes:
+            e = ex.rstrip("/")
+            if path == e or path.startswith(e + "/"):
+                return False
+        return True
+    patterns = sorted({p for e in claims.values()
+                       if e["status"] != "retracted"
+                       for p in (e["claim"]["payload"].get("evidence_paths")
+                                 or [])})
+    considered = [p for p in tracked if scoped(p)]
+    dark = [p for p in considered if not match_paths(p, patterns)]
+    return {"dark": sorted(dark), "considered": len(considered)}
+
 def premise_check(status, tier):
     """ADR-001 matrix. Returns (passes, warning-or-None)."""
     if status == "live":
@@ -910,7 +1287,7 @@ def premise_check(status, tier):
         if tier == "P0":
             return False, None
         return True, "premise is cannot_verify (non-P0, passes per ADR-001)"
-    return False, None  # stale | diverged | retracted | missing
+    return False, None  # stale | diverged | disputed | retracted | missing
 
 def join_ready(issues, claims, premises):
     """Annotate bd issues with premise validity; return (ready, all)."""
@@ -977,6 +1354,11 @@ def validate_events(events):
             if field in ev and not ev[field]:
                 errors.append(f"line {n}: empty envelope field '{field}' "
                               "(schema requires minLength 1)")
+        if "ts" in ev and not TS_RE.match(str(ev.get("ts") or "")):
+            errors.append(f"line {n}: ts not in the canonical profile "
+                          "YYYY-MM-DDTHH:MM:SS.ssssss+00:00 (ADR-015: the "
+                          "fold sorts the raw string, so any other offset, "
+                          "Z-suffix, or precision breaks order coherence)")
         kind, p = ev.get("kind"), ev.get("payload", {})
         # issue records carry wk- envelope ids (ADR-002); everything else tr-
         id_re, id_name = ((WK_ID_RE, "wk-hex8") if kind == "issue"
@@ -1008,7 +1390,8 @@ def validate_events(events):
                         or any(not ID_RE.match(str(c)) for c in od)):
                     errors.append(f"line {n}: overridden_duplicates must be a "
                                   "non-empty list of tr-hex8 ids (MEDIUM-1: "
-                                  "the --duplicate-ok trace)")
+                                  "the --duplicate-ok trace records which "
+                                  "active claims it declared distinct from)")
             if "screened" in p.get("evidence", {}) \
                     and not isinstance(p["evidence"]["screened"], bool):
                 errors.append(f"line {n}: evidence.screened must be a "
@@ -1036,11 +1419,24 @@ def validate_events(events):
                 errors.append(f"line {n}: malformed invalidation")
             elif not ID_RE.match(str(p.get("claim"))):
                 errors.append(f"line {n}: invalidation claim ref not tr-hex8")
+        elif kind == "contradicts":
+            if not p.get("a") or not p.get("b") \
+                    or not (p.get("basis") or "").strip():
+                errors.append(f"line {n}: malformed contradicts (needs "
+                              "a, b, basis) (issue #4)")
+            elif not ID_RE.match(str(p["a"])) or not ID_RE.match(str(p["b"])):
+                errors.append(f"line {n}: contradicts refs not tr-hex8")
+            # a==b is refused at INTAKE and inert in the fold, but not a
+            # validate error: draft-07 cannot express property inequality,
+            # and the mirror may not be stricter than the schema (FS-2)
         elif kind == "premise":
             if not p.get("issue") or not p.get("claim"):
                 errors.append(f"line {n}: malformed premise")
             elif not ID_RE.match(str(p.get("claim"))):
                 errors.append(f"line {n}: premise claim ref not tr-hex8")
+            if "supersedes" in p and not ID_RE.match(str(p["supersedes"])):
+                errors.append(f"line {n}: premise supersedes ref not tr-hex8 "
+                              "(ADR-013)")
         elif kind == "issue":
             if not p.get("title"):
                 errors.append(f"line {n}: issue missing title")
@@ -1048,6 +1444,17 @@ def validate_events(events):
                 errors.append(f"line {n}: issue dep ref not wk-hex8")
             if any(not ID_RE.match(str(c)) for c in p.get("premises", [])):
                 errors.append(f"line {n}: issue premise ref not tr-hex8")
+            if "accept" in p:
+                acc = p["accept"]
+                if not isinstance(acc, dict) or not acc.get("command"):
+                    errors.append(f"line {n}: issue accept missing command "
+                                  "(ADR-014)")
+                elif acc.get("kind") not in ACCEPT_KINDS:
+                    errors.append(f"line {n}: issue accept kind must be one "
+                                  f"of {'/'.join(ACCEPT_KINDS)} (ADR-014)")
+                elif not isinstance(acc.get("screened"), bool):
+                    errors.append(f"line {n}: issue accept.screened must be "
+                                  "a boolean (ADR-014)")
         elif kind == "issue_event":
             if p.get("event") not in ISSUE_EVENTS or not p.get("issue"):
                 errors.append(f"line {n}: malformed issue_event")
@@ -1055,6 +1462,25 @@ def validate_events(events):
                 errors.append(f"line {n}: issue_event ref not wk-hex8")
             elif p.get("event") in ("closed", "cancelled") and not p.get("basis"):
                 errors.append(f"line {n}: {p['event']} issue_event missing basis")
+            if "accept" in p:
+                acc = p["accept"]
+                if not isinstance(acc, dict) \
+                        or not isinstance(acc.get("executed"), bool):
+                    errors.append(f"line {n}: issue_event accept.executed "
+                                  "must be a boolean (ADR-014)")
+                elif acc["executed"] and acc.get("returncode") != 0:
+                    errors.append(f"line {n}: an executed acceptance on a "
+                                  "close must record returncode 0 -- a "
+                                  "failing oracle never closes (ADR-014)")
+                elif not acc["executed"] and "returncode" in acc:
+                    errors.append(f"line {n}: an unexecuted acceptance "
+                                  "(executed=false) must not carry a "
+                                  "returncode -- there was no run to have an "
+                                  "exit code (ADR-014, MEDIUM-3)")
+                elif "kind" in acc and acc["kind"] not in ACCEPT_KINDS:
+                    errors.append(f"line {n}: issue_event accept kind must "
+                                  f"be one of {'/'.join(ACCEPT_KINDS)} "
+                                  "(ADR-014)")
     return errors
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1073,10 +1499,16 @@ def ledger_path():
     return os.path.join(repo_root(), LEDGER_REL)
 
 def now_dt():
-    """The only place TRUTH_NOW is honored (test hook; never in prod)."""
+    """The only place TRUTH_NOW is honored (test hook; never in prod).
+    ADR-015: the override is normalized to aware-UTC so now_iso() always
+    renders the canonical profile -- a naive or Z-suffix TRUTH_NOW must
+    not mint a record validate would then reject."""
     override = os.environ.get("TRUTH_NOW")
     if override:
-        return datetime.fromisoformat(override)
+        dt = datetime.fromisoformat(override.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     return datetime.now(timezone.utc)
 
 def now_iso():
@@ -1125,10 +1557,12 @@ def run_evidence(cmd):
     r = subprocess.run(cmd, shell=True, capture_output=True)
     return hashlib.sha256(r.stdout).hexdigest(), r.returncode
 
-def load_allowlist():
+def load_allowlist(rel=EVIDENCE_ALLOW_REL):
     """ADR-009: the evidence-command allowlist, or None when absent
-    (the screen then fails closed for VERIFIED intake and recheck)."""
-    path = os.path.join(repo_root(), EVIDENCE_ALLOW_REL)
+    (the screen then fails closed for VERIFIED intake and recheck).
+    ADR-014 loads the acceptance allowlist through the same reader
+    (rel=ACCEPT_ALLOW_REL)."""
+    path = os.path.join(repo_root(), rel)
     if not os.path.exists(path):
         return None
     out = []
@@ -1170,8 +1604,41 @@ def human_ack_error(target_id, what):
         return "truth: confirmation mismatch -- nothing filed"
     return None
 
+def _last_ledger_ts():
+    """The ts of the ledger's last well-formed line, or None."""
+    path = ledger_path()
+    if not os.path.exists(path):
+        return None
+    last = None
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                last = json.loads(line).get("ts")
+            except json.JSONDecodeError:
+                continue
+    return last
+
 def append_record(kind, payload, prefix="tr-"):
-    rec = make_record(kind, payload, actor(), session(), now_iso(), prefix)
+    ts = now_iso()
+    # ADR-015 clock-push (the HLC 'physical clock catch-up' half, and
+    # nothing more): a real-clock record must not sort before the ledger
+    # tail it causally follows. Small honest skew (same-machine append
+    # races, NTP steps) is absorbed by bumping 1 microsecond past the
+    # tail; skew beyond ADR-008's tolerance is NOT absorbed -- the
+    # honest clock is kept and order_check's existing regression warning
+    # surfaces it, so a forged far-future tail cannot drag every later
+    # record with it. TRUTH_NOW (test hook) disables the push: seeded
+    # backdating is the point of the hook (canary FAULT D).
+    if not os.environ.get("TRUTH_NOW"):
+        last = _last_ledger_ts()
+        if last and TS_RE.match(str(last)) and ts <= last:
+            last_dt = parse_ts(last)
+            if (last_dt - now_dt()).total_seconds() <= SKEW_TOLERANCE_SECONDS:
+                ts = (last_dt + timedelta(microseconds=1)) \
+                    .isoformat(timespec="microseconds")
+    rec = make_record(kind, payload, actor(), session(), ts, prefix)
     path = ledger_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
@@ -1212,10 +1679,12 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
         sys.exit("truth: claim text must be non-empty -- an assertion with "
                  "no sentence cannot be verified, diverged from, or cited "
                  "(schema: text minLength 1)")
-    # G8 duplicate gate (MEDIUM-1 backport): compute conflicts
-    # UNCONDITIONALLY so a --duplicate-ok override records which active
-    # claims it declared distinct from, instead of vanishing silently
-    # (unlike scope_basis/screened, which self-record).
+    # G8 duplicate gate. Compute conflicts UNCONDITIONALLY (MEDIUM-1): a
+    # bare --duplicate-ok used to skip the check and leave no trace, unlike
+    # every other override (scope_basis, screened) which records itself.
+    # Now the override stamps the ids it bypassed onto the record, so the
+    # author's "these are genuinely distinct" judgment is attackable ledger
+    # content a verifier can review -- not a silent flag.
     similar = duplicate_conflicts(text, claims)
     if similar and not duplicate_ok:
         lines = "\n".join(f"  {cid}: {t}" for cid, t in similar)
@@ -1416,8 +1885,68 @@ def cmd_invalidate_scan(a):
         print(f"invalidate-scan: {len(hits)} claim(s) marked stale")
 
 def cmd_premise(a):
-    rec = append_record("premise", {"issue": a.issue, "claim": a.claim_id})
+    payload = {"issue": a.issue, "claim": a.claim_id}
+    if a.supersedes:
+        # ADR-013 intake gates: the fold is permissive (any recorded
+        # redirect applies, for confluence); intake is strict so a
+        # redirect that could never mean anything fails loudly.
+        if not ID_RE.match(a.supersedes):
+            sys.exit("truth: --supersedes must name a tr- claim id (ADR-013)")
+        if a.supersedes == a.claim_id:
+            sys.exit("truth: a claim cannot supersede itself (ADR-013)")
+        events = load_events()
+        claims, premises = fold(events)
+        issues = fold_issues(events)
+        premises = merge_premises(premises, issue_premises(issues))
+        premises = apply_supersedes(premises, fold_supersedes(events))
+        if a.claim_id not in claims:
+            sys.exit(f"truth: replacement claim {a.claim_id} is not in the "
+                     "ledger -- file the corrected fact first (ADR-013)")
+        if a.supersedes not in premises.get(a.issue, []):
+            sys.exit(f"truth: {a.supersedes} is not currently a premise of "
+                     f"{a.issue} (after redirects) -- nothing to supersede "
+                     "(ADR-013)")
+        old = claims.get(a.supersedes)
+        if old and old["status"] in ("live", "unverified"):
+            sys.exit(f"truth: premise {a.supersedes} is {old['status']} and "
+                     "passes ready as-is -- supersede is for dead premises "
+                     "(stale, diverged, retracted, cannot_verify, missing); "
+                     "re-verify or diverge it first (ADR-013)")
+        payload["supersedes"] = a.supersedes
+    rec = append_record("premise", payload)
     print(json.dumps(rec) if a.json else rec["id"])
+
+def cmd_contradicts(a):
+    events = load_events()
+    claims, _ = fold(events)
+    if a.claim_a == a.claim_b:
+        sys.exit("truth: a claim cannot contradict itself (issue #4)")
+    for cid in (a.claim_a, a.claim_b):
+        if cid not in claims:
+            sys.exit(f"truth: unknown claim {cid} -- a contradiction is "
+                     "declared between two EXISTING claims (issue #4)")
+        if claims[cid]["status"] == "retracted":
+            sys.exit(f"truth: {cid} is retracted -- the dispute is already "
+                     "resolved; an edge to a tombstone can never fire "
+                     "(issue #4)")
+    pair = {a.claim_a, a.claim_b}
+    for _, ev in events:
+        if ev.get("kind") == "contradicts" \
+                and {ev["payload"].get("a"), ev["payload"].get("b")} == pair:
+            sys.exit(f"truth: this contradiction is already declared "
+                     f"({ev['id']}) -- one edge per pair, either "
+                     "direction (issue #4)")
+    if not (a.basis or "").strip():
+        sys.exit("truth: --basis is required: state WHY these cannot both "
+                 "hold; the sentence is the attackable record (issue #4)")
+    rec = append_record("contradicts", {"a": a.claim_a, "b": a.claim_b,
+                                        "basis": a.basis})
+    both_live = all(claims[c]["status"] == "live"
+                    for c in (a.claim_a, a.claim_b))
+    state = ("both claims now derive DISPUTED (premised work HOLDs, "
+             "specs citing either side fail)" if both_live else
+             "edge filed DORMANT (fires only while both sides are live)")
+    print(f"{rec['id']}: {a.claim_a} <-x-> {a.claim_b} -- {state}")
 
 def cmd_list(a):
     claims, _ = fold(load_events())
@@ -1475,6 +2004,25 @@ def cmd_issue(a):
               "(premise-at-birth, ADR-002)", file=sys.stderr)
     payload = {"title": a.title, "text": a.text or "",
                "deps": deps, "premises": premises}
+    # ADR-014: the finish line is declared BEFORE the work happens
+    # (accept-at-birth, the completion mirror of premise-at-birth) --
+    # attackable at review time, like scope_basis.
+    if a.accept_kind and not a.accept_cmd:
+        sys.exit("truth: --accept-kind names an oracle shape with no "
+                 "oracle -- give --accept-cmd too (ADR-014)")
+    if a.accept_cmd:
+        err = screen_accept_command(a.accept_cmd,
+                                    load_allowlist(ACCEPT_ALLOW_REL))
+        if err and not a.accept_unsafe_ok:
+            sys.exit("truth: " + err)
+        if err:
+            print("warning: acceptance oracle filed unscreened "
+                  "(accept.screened=false) -- `done` will refuse to "
+                  "execute it, and closing will need --accept-unsafe-ok, "
+                  "stamped on the close event (ADR-014)", file=sys.stderr)
+        payload["accept"] = {"command": a.accept_cmd,
+                             "kind": a.accept_kind or "verification",
+                             "screened": err is None}
     rec = append_record("issue", payload, prefix="wk-")
     print(json.dumps(rec) if a.json else rec["id"])
 
@@ -1511,7 +2059,7 @@ def cmd_done(a):
     err = issue_event_error(status, event)
     if err:
         sys.exit(f"truth: {err}")
-    claim_rec = None
+    claim_payload = None
     if a.claim_text:
         if event != "closed":
             sys.exit("truth: --claim only accompanies a plain close "
@@ -1519,15 +2067,61 @@ def cmd_done(a):
         claims, _ = fold(events)
         # Validate and run evidence BEFORE any append: both records or
         # neither (ADR-002). build_claim_payload sys.exits on any failure.
-        payload = build_claim_payload(a.claim_text, a.evidence_class,
-                                      a.evidence_cmd, a.paths, a.tier,
-                                      a.ttl_days, a.claim_basis,
-                                      a.single_run, a.duplicate_ok, claims,
-                                      a.scope_ok, a.evidence_unsafe_ok)
-        claim_rec = append_record("claim", payload)
-    append_record("issue_event", {"issue": a.issue_id, "event": event,
-                                  "basis": a.basis})
+        claim_payload = build_claim_payload(a.claim_text, a.evidence_class,
+                                            a.evidence_cmd, a.paths, a.tier,
+                                            a.ttl_days, a.claim_basis,
+                                            a.single_run, a.duplicate_ok,
+                                            claims, a.scope_ok,
+                                            a.evidence_unsafe_ok)
+    # ADR-014: the acceptance oracle gates a plain close -- it runs after
+    # the cheap intake checks and before ANY append (both-or-neither
+    # extends to the oracle). --cancel/--reopen skip it: killing or
+    # reviving work must not require its finish line to pass.
+    accept_note = None
+    accept = issues[a.issue_id]["issue"]["payload"].get("accept")
+    if event == "closed" and accept:
+        err = (None if accept.get("screened")
+               else "the oracle was filed unscreened (accept.screened=false)")
+        if err is None:
+            # Re-screen against the CURRENT allowlist: it is the committed
+            # policy NOW, not at filing time (the ADR-009 intake-AND-
+            # recheck posture).
+            err = screen_accept_command(accept.get("command", ""),
+                                        load_allowlist(ACCEPT_ALLOW_REL))
+        if err:
+            if not a.accept_unsafe_ok:
+                sys.exit(f"truth: refusing to execute the acceptance "
+                         f"oracle -- {err}\n  Fix {ACCEPT_ALLOW_REL} (or "
+                         "the oracle) and re-run; --accept-unsafe-ok "
+                         "closes WITHOUT running it and stamps "
+                         "executed=false on the event (ADR-014)")
+            accept_note = {"command": accept.get("command"),
+                           "kind": accept.get("kind", "verification"),
+                           "executed": False, "screened": False}
+        else:
+            r = subprocess.run(accept["command"], shell=True,
+                               cwd=repo_root(), capture_output=True,
+                               text=True)
+            if r.returncode != 0:
+                tail = "\n".join((r.stdout + r.stderr).splitlines()[-15:])
+                sys.exit(f"truth: acceptance oracle failed (exit "
+                         f"{r.returncode}) -- {a.issue_id} stays {status}; "
+                         "the finish line is the command, not the "
+                         f"narrative (ADR-014)\n  $ {accept['command']}\n"
+                         f"{tail}")
+            accept_note = {"command": accept["command"],
+                           "kind": accept.get("kind", "verification"),
+                           "executed": True, "returncode": 0}
+    claim_rec = (append_record("claim", claim_payload)
+                 if claim_payload else None)
+    event_payload = {"issue": a.issue_id, "event": event, "basis": a.basis}
+    if accept_note:
+        event_payload["accept"] = accept_note
+    append_record("issue_event", event_payload)
     out = f"{a.issue_id} -> {event}"
+    if accept_note:
+        out += (" (acceptance passed)" if accept_note["executed"]
+                else " (acceptance NOT executed -- unscreened oracle)")
     if claim_rec:
         out += f"; filed {claim_rec['id']}"
     print(out)
@@ -1547,7 +2141,8 @@ def cmd_issues(a):
         p = e["issue"]["payload"]
         rows.append({"id": wid, "status": e["status"],
                      "title": p.get("title"), "deps": p.get("deps", []),
-                     "premises": premises.get(wid, [])})
+                     "premises": premises.get(wid, []),
+                     "accept": p.get("accept")})
     if a.json:
         print(json.dumps(rows, indent=2))
     else:
@@ -1557,6 +2152,8 @@ def cmd_issues(a):
                 extra += f"  deps: {','.join(r['deps'])}"
             if r["premises"]:
                 extra += f"  premises: {','.join(r['premises'])}"
+            if r["accept"]:
+                extra += f"  accept: {r['accept'].get('kind')}"
             print(f"{r['id']}  {r['status']:<9} {r['title']}{extra}")
 
 def tracker_issues(a, native=None):
@@ -1603,8 +2200,10 @@ def cmd_ready(a):
     native = native_ready_issues(issues_fold) if issues_fold else None
     issues = tracker_issues(a, native)
     # premise-at-birth links apply whichever source delivered the issues,
-    # so native, --stdin, and adapter paths join identically (ADR-002)
+    # so native, --stdin, and adapter paths join identically (ADR-002);
+    # redirects apply after the merge so payload links redirect too (ADR-013)
     premises = merge_premises(premises, issue_premises(issues_fold))
+    premises = apply_supersedes(premises, fold_supersedes(events))
     ready, annotated = join_ready(issues, claims, premises)
     if a.json:
         print(json.dumps(ready, indent=2))
@@ -1618,11 +2217,107 @@ def cmd_ready(a):
                 print(f"HELD {i.get('id')}  broken premises: "
                       f"{', '.join(i['_truth']['broken_premises'])}")
 
+def events_at_ref(ref):
+    """The ledger's content at a git ref, folded-ready. Exit 2 on an
+    unreadable ref/path: a baseline over nothing is usage, not data."""
+    r = subprocess.run(["git", "show", f"{ref}:{LEDGER_REL}"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"truth: cannot read {LEDGER_REL} at {ref!r} -- "
+              f"{r.stderr.strip().splitlines()[-1] if r.stderr.strip() else 'git show failed'} "
+              "(exit 2: usage)", file=sys.stderr)
+        sys.exit(2)
+    return load_events(io.StringIO(r.stdout))
+
+def _short_sha(ref):
+    r = subprocess.run(["git", "rev-parse", "--short", ref],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else "?"
+
+def cmd_baseline(a):
+    snap_a = baseline_snapshot(events_at_ref(a.ref))
+    if not a.diff:
+        snap_a["ref"] = a.ref
+        snap_a["commit"] = _short_sha(a.ref)
+        if a.json:
+            print(json.dumps(snap_a, indent=2, sort_keys=True))
+        else:
+            c, i = snap_a["claims"], snap_a["issues"]
+            fmt = lambda d: ", ".join(f"{v} {k}" for k, v in d.items()) or "none"
+            print(f"baseline {a.ref} ({snap_a['commit']}): "
+                  f"{snap_a['records']} records")
+            print(f"claims: {fmt(c['by_status'])}  "
+                  f"[{' / '.join(f'{k} {v}' for k, v in c['by_tier'].items())}]")
+            print(f"issues: {fmt(i['by_status'])}")
+        return
+    snap_b = baseline_snapshot(events_at_ref(a.diff))
+    delta = baseline_diff(snap_a, snap_b)
+    delta["from"], delta["to"] = a.ref, a.diff
+    disappeared = any(delta[k]["disappeared"] for k in ("claims", "issues"))
+    if a.json:
+        print(json.dumps(delta, indent=2, sort_keys=True))
+    else:
+        print(f"baseline diff {a.ref} -> {a.diff} "
+              f"({delta['records_delta']:+d} records)")
+        for kind in ("claims", "issues"):
+            d = delta[kind]
+            if d["born"]:
+                by = {}
+                for _, st in d["born"].items():
+                    by[st] = by.get(st, 0) + 1
+                print(f"{kind} born: {len(d['born'])} "
+                      f"({', '.join(f'{v} {k}' for k, v in sorted(by.items()))})")
+                for i_, st in d["born"].items():
+                    print(f"  + {i_}  {st}")
+            for pair, ids in d["transitions"].items():
+                print(f"{kind} {pair}: {len(ids)}")
+                for i_ in ids:
+                    print(f"  ~ {i_}")
+            for i_, st in d["disappeared"].items():
+                print(f"{kind} DISAPPEARED (was {st}): {i_} -- a record "
+                      "present at the older ref is gone: history was "
+                      "rewritten or the refs diverge (10007 omission)")
+    sys.exit(5 if disappeared else 0)
+
 def cmd_impact(a):
+    if a.inverse:
+        # Issue #5: the backward slice. Positional paths make no sense
+        # here -- the verb enumerates the whole tracked universe; --under
+        # is the scoping surface.
+        if a.paths:
+            sys.exit("truth: --inverse takes no positional paths (it "
+                     "enumerates every tracked file; scope with --under)")
+        claims, _ = fold(load_events())
+        rep = inverse_report(tracked_files(), claims, a.under,
+                             a.exclude or [])
+        if rep["considered"] == 0:
+            # An audit over an empty universe is a misconfiguration
+            # (typo'd --under, over-broad --exclude), not a clean pass --
+            # exit 0 here would be a permanent false green for any
+            # satellite gating on this verb.
+            print("truth: --inverse scope matched no tracked files -- "
+                  "check --under/--exclude (exit 2: usage, not a clean "
+                  "audit)", file=sys.stderr)
+            sys.exit(2)
+        if a.json:
+            print(json.dumps(rep, indent=2))
+        else:
+            for p in rep["dark"]:
+                print(p)
+            print(f"impact --inverse: {len(rep['dark'])} of "
+                  f"{rep['considered']} tracked file(s) watched by no "
+                  "active claim", file=sys.stderr)
+        sys.exit(4 if rep["dark"] else 0)
+    if a.under or a.exclude:
+        sys.exit("truth: --under/--exclude only accompany --inverse")
+    if not a.paths:
+        sys.exit("truth: give paths to query, or --inverse for the "
+                 "backward slice")
     events = load_events()
     claims, premises = fold(events)
     issues = fold_issues(events)
     premises = merge_premises(premises, issue_premises(issues))
+    premises = apply_supersedes(premises, fold_supersedes(events))
     rows = impact_report(a.paths, claims, issues, premises)
     if a.json:
         print(json.dumps(rows, indent=2))
@@ -1800,12 +2495,33 @@ def cmd_doctor(a):
         fail("discovery", "no instruction file mentions scripts/truth -- the "
              f"layer is invisible to agents (G2). Checked: {', '.join(DISCOVERY_FILES)}")
 
-    claims, premises = fold(load_events()) if os.path.exists(lp) else ({}, {})
+    events_d = load_events() if os.path.exists(lp) else []
+    claims, premises = fold(events_d)
     dangling = [f"{i}->{c}" for i, cs in premises.items() for c in cs if c not in claims]
     if dangling:
         warn("premise integrity", f"dangling premise(s): {', '.join(dangling)}")
     elif premises:
         ok("premise integrity")
+
+    # wk-968bc087: G2's invisibility failure, work-kernel edition. A
+    # facts-only ledger is legitimate, so this is a WARN, not a FAIL --
+    # but wk- records with no instruction file naming `truth ready`
+    # means agents can discover the facts and never the work standing
+    # on them.
+    if any(ev.get("kind") == "issue" for _, ev in events_d):
+        names_ready = [f for f in DISCOVERY_FILES
+                       if os.path.exists(os.path.join(root, f))
+                       and "truth ready" in open(os.path.join(root, f),
+                                                 encoding="utf-8",
+                                                 errors="replace").read()]
+        if names_ready:
+            ok("work-kernel discovery",
+               f"`truth ready` named in {', '.join(names_ready)}")
+        else:
+            warn("work-kernel discovery",
+                 "wk- issue records exist but no instruction file names "
+                 "`truth ready` -- the work kernel is invisible to agents "
+                 f"(G2). Checked: {', '.join(DISCOVERY_FILES)}")
 
     old = [r_ for r_ in queue_rows(claims, now_dt())
            if r_["age_days"] is not None and r_["age_days"] > QUEUE_AGE_WARN_DAYS]
@@ -1871,11 +2587,29 @@ def main():
     s.set_defaults(fn=cmd_invalidate_scan)
 
     p = sub.add_parser("premise", help="link a tracker issue (external or wk-) "
-                       "to a claim it depends on")
+                       "to a claim it depends on; --supersedes redirects a "
+                       "dead premise to its corrected claim (ADR-013)")
     p.add_argument("issue")
     p.add_argument("claim_id")
+    p.add_argument("--supersedes", metavar="OLD_TR",
+                   help="dead premise claim this link replaces for the issue "
+                        "-- an auditable redirect the ready-fold honors; "
+                        "refused while the old premise still passes ready "
+                        "(ADR-013)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_premise)
+
+    ct = sub.add_parser("contradicts", help="declare two claims cannot both "
+                        "hold (issue #4): while both would otherwise be "
+                        "live, both derive DISPUTED -- premised work HOLDs "
+                        "and specs citing either side fail; resolve by "
+                        "retract/supersede/re-file, no new verb")
+    ct.add_argument("claim_a")
+    ct.add_argument("claim_b")
+    ct.add_argument("--basis", required=True,
+                    help="why these cannot both hold -- the attackable "
+                         "record of the accusation")
+    ct.set_defaults(fn=cmd_contradicts)
 
     i = sub.add_parser("issue", help="file a work item in the ledger (ADR-002); "
                        "link the facts it stands on with --premise")
@@ -1885,6 +2619,21 @@ def main():
     i.add_argument("--premise", action="append",
                    help="claim id this work stands on (repeatable; "
                         "premise-at-birth)")
+    i.add_argument("--accept-cmd", dest="accept_cmd",
+                   help="executable finish line: `done` runs this from the "
+                        "repo root and refuses the close on non-zero exit; "
+                        "screened against .truth/accept-allow (ADR-014)")
+    i.add_argument("--accept-kind", dest="accept_kind",
+                   choices=ACCEPT_KINDS,
+                   help="which of 12207's two V's the oracle is: "
+                        "verification = suite/gate ('built right'), "
+                        "validation = golden-diff ('built the right "
+                        "thing'); default verification (ADR-014)")
+    i.add_argument("--accept-unsafe-ok", dest="accept_unsafe_ok",
+                   action="store_true",
+                   help="file despite a failed acceptance-command screen "
+                        "(ADR-014); `done` will refuse to execute the "
+                        "oracle, so the close will need this flag again")
     i.add_argument("--json", action="store_true")
     i.set_defaults(fn=cmd_issue)
 
@@ -1920,6 +2669,12 @@ def main():
                     help="see `truth claim --scope-ok` (ADR-007)")
     dn.add_argument("--evidence-unsafe-ok", action="store_true",
                     help="see `truth claim --evidence-unsafe-ok` (ADR-009)")
+    dn.add_argument("--accept-unsafe-ok", dest="accept_unsafe_ok",
+                    action="store_true",
+                    help="close WITHOUT executing an acceptance oracle that "
+                         "CANNOT run (unscreened or unscreenable); stamped "
+                         "executed=false on the event. Never overrides an "
+                         "oracle that ran and failed (ADR-014)")
     dn.set_defaults(fn=cmd_done)
 
     iss = sub.add_parser("issues", help="list work items with derived status; "
@@ -1961,11 +2716,38 @@ def main():
 
     im = sub.add_parser("impact", help="what knowledge does editing these "
                         "paths endanger? (ADR-005; read-only prediction; "
-                        "exit 0 silent / 3 watched)")
-    im.add_argument("paths", nargs="+",
-                    help="repo-root-relative paths about to be edited")
+                        "exit 0 silent / 3 watched). --inverse flips the "
+                        "question: which tracked files does no active "
+                        "claim watch? (issue #5; exit 0 clean / 4 dark)")
+    im.add_argument("paths", nargs="*",
+                    help="repo-root-relative paths about to be edited "
+                         "(forward mode; forbidden with --inverse)")
+    im.add_argument("--inverse", action="store_true",
+                    help="list tracked files watched by NO active "
+                         "(non-retracted) claim -- the 24765 backward "
+                         "trace; exit 4 when dark files exist")
+    im.add_argument("--under", metavar="DIR",
+                    help="restrict --inverse to files under this "
+                         "repo-root-relative directory")
+    im.add_argument("--exclude", metavar="PREFIX", action="append",
+                    help="drop files under this path prefix from "
+                         "--inverse (repeatable; lockfiles, assets)")
     im.add_argument("--json", action="store_true")
     im.set_defaults(fn=cmd_impact)
+
+    bl = sub.add_parser("baseline", help="fold the ledger at a git ref: "
+                        "the frozen status account (10007, issue #3); "
+                        "--diff folds a second ref and prints the delta "
+                        "(exit 5 if any record DISAPPEARED -- rewritten "
+                        "history; exit 2 unreadable ref)")
+    bl.add_argument("ref", help="git ref to fold the ledger at (tag, sha, HEAD)")
+    bl.add_argument("--diff", metavar="REF_B",
+                    help="second (newer) ref: print born/transitions/"
+                         "disappeared between ref and REF_B")
+    bl.add_argument("--json", action="store_true",
+                    help="deterministic JSON (sorted; redirect to a file "
+                         "and commit it if you want a persisted baseline)")
+    bl.set_defaults(fn=cmd_baseline)
 
     d = sub.add_parser("dispatch",
                        help="print the verifier context (prompt + claim only) for a fresh session")
