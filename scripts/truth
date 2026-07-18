@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
-"""truth v0.9.4 -- append-only claims ledger with a native work kernel.
+"""truth v0.9.5 -- append-only claims ledger with a native work kernel.
+
+v0.9.5 (independent ledger-code review, H3 -- spec-precision, zero
+  behavior change): ADR-020 (wk-b35d3849) pins the fold's status as ONE
+  total function -- fold every event in (ts, id, canon) order, each
+  verdict/invalidation sets status last-writer-wins, and `retracted` is
+  absorbing (checked on the folded status, not ts). So `cannot_verify`,
+  `diverged`, and `stale` are RECOVERABLE (a later `agree` returns them
+  to live) while `retracted` is the sole terminal verdict. H3 also
+  escalated this to "a verdict-path analogue of C1"; that was REJECTED
+  with evidence (live sandbox + an adversarial 600-trial confluence
+  fuzz): distinct verdict ids + the ADR-016 total order keep the verdict
+  path confluent (C1 broke confluence), backdating only lowers a record's
+  key so it is dominated by filing at ts=now, and the sole residual is the
+  accepted section-8 forgery -- which even trips an ADR-008 warning. No
+  runtime gate added. Core tests test_verdict_precedence_is_confluent /
+  _negative_verdicts_are_recoverable / _retracted_absorbs_in_any_order;
+  canary FAULT RV.
+
 
 v0.9.4 (independent ledger-code review, H1/H2 -- spec-precision, zero
   behavior change): two conformance defects where the prose underdetermined

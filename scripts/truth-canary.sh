@@ -314,6 +314,20 @@ else
   miss "retracted claim $CID_H changed status"
 fi
 
+say "FAULT RV (ADR-020): a diverged claim must RECOVER to live via a later agree"
+# Mirror of FAULT H: only retracted is terminal -- diverged/cannot_verify
+# are recoverable. Author session diverges (self-diverge is allowed), a
+# fresh verifier session agrees later (ADR-010 + LWW) -> back to live.
+CID_RV=$(TRUTH_SESSION=s-author-rv $T claim "the retry backoff is exponential" \
+         --class INFERRED --basis "reasoned from the config" --tier P2)
+TRUTH_SESSION=s-author-rv $T verdict "$CID_RV" diverge --basis "recipe drifted" >/dev/null
+if TRUTH_SESSION=s-verifier-rv $T verdict "$CID_RV" agree --basis "re-checked the fact holds" >/dev/null 2>&1 \
+   && $T list --live --json | grep -q "$CID_RV"; then
+  ok "diverged $CID_RV recovered to live via a later cross-session agree (ADR-020)"
+else
+  miss "a diverged claim could not recover to live -- negative verdicts wrongly terminal"
+fi
+
 say "FAULT I (G8): near-duplicate of an active claim must be refused"
 $T claim "the payments module handles all currency conversion logic" --tier P2 >/dev/null
 if $T claim "the payments module handles currency conversion" --tier P2 2>/dev/null; then
