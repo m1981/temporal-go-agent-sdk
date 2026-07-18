@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# truth-canary.sh v0.6.2 -- seeded-fault acceptance suite (seeded faults + TL hardening + adapter seam + bd normalization + ADR-002 work kernel + ADR-006 issue-fold hardening + INV-M dead-tripwire intake checks + ADR-005 impact verb + spec-health/doc-health incl. degradation paths + v0.6 solo-regime hardening: ADR-007 Q-faults, ADR-008 B-faults, ADR-009 E-faults, ADR-010 V-faults, ADR-011 H-faults, ADR-012 M1 + v0.6.2 review-finding faults: F1 arg-deny E5, F2 ts-evasion B3/B4, F3 scope-signal Q5/Q6).
+# truth-canary.sh v0.9.0 -- seeded-fault acceptance suite (v0.9.0 issue #4 C1-C5 contradicts/DISPUTED + SC session-close survival gate + v0.7.1 issue #5 W5-W8 impact --inverse + v0.7.0 ADR-014 AC1-AC7 acceptance oracles + v0.6.4 ADR-013 R10 premise supersede +seeded faults + TL hardening + adapter seam + bd normalization + ADR-002 work kernel + ADR-006 issue-fold hardening + INV-M dead-tripwire intake checks + ADR-005 impact verb + spec-health/doc-health incl. degradation paths + v0.6 solo-regime hardening: ADR-007 Q-faults, ADR-008 B-faults, ADR-009 E-faults, ADR-010 V-faults, ADR-011 H-faults, ADR-012 M1 + v0.6.2 review-finding faults: F1 arg-deny E5, F2 ts-evasion B3/B4, F3 scope-signal Q5/Q6 + v0.6.3 TL-2 work-kernel discovery warn).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PASS=0; FAIL=0
@@ -7,8 +7,8 @@ say()  { printf '%s\n' "$*"; }
 ok()   { PASS=$((PASS+1)); say "  CAUGHT: $*"; }
 miss() { FAIL=$((FAIL+1)); say "  MISSED: $*"; }
 
-TMP1="$(mktemp -d)"; TMP2="$(mktemp -d)"; TMP3="$(mktemp -d)"
-cleanup() { rm -rf "$TMP1" "$TMP2" "$TMP3"; }
+TMP1="$(mktemp -d)"; TMP2="$(mktemp -d)"; TMP3="$(mktemp -d)"; TMP4="$(mktemp -d)"; TMP5="$(mktemp -d)"
+cleanup() { rm -rf "$TMP1" "$TMP2" "$TMP3" "$TMP4" "$TMP5"; }
 trap cleanup EXIT
 
 mkrepo() {
@@ -23,7 +23,8 @@ mkrepo() {
   cp "$HERE/check-truth.sh" scripts/check-truth.sh
   cp "$HERE/spec-health.sh" scripts/spec-health.sh
   cp "$HERE/doc-health.sh" scripts/doc-health.sh
-  chmod +x scripts/truth scripts/check-truth.sh scripts/spec-health.sh scripts/doc-health.sh
+  cp "$HERE/session-close.sh" scripts/session-close.sh
+  chmod +x scripts/truth scripts/check-truth.sh scripts/spec-health.sh scripts/doc-health.sh scripts/session-close.sh
 }
 T="python3 scripts/truth"
 export TRUTH_ACTOR=canary TRUTH_SESSION=s-canary
@@ -397,7 +398,7 @@ say "FAULT K (INV-G'): appending a duplicate claim id must not reset status"
 python3 - "$CID_H" <<'PYEOF'
 import json, sys
 rec={"id":sys.argv[1],"kind":"claim","actor":"agent-x","session":"s-evil",
-     "ts":"2099-01-01T00:00:00+00:00",
+     "ts":"2099-01-01T00:00:00.000000+00:00",
      "payload":{"text":"resurrection via duplicate id","evidence_class":"UNVERIFIED",
                 "cost_tier":"P0","ttl_days":None,"evidence_paths":[]}}
 open(".truth/claims.jsonl","a").write(json.dumps(rec,sort_keys=True)+"\n")
@@ -479,6 +480,107 @@ else
   ok "validate failed the junk-ts backdated duplicate (F2 closed)"
 fi
 mv claims.b4.bak .truth/claims.jsonl
+
+say "FAULT B5 (ADR-016, C1): an EQUAL-ts duplicate id with different content must fail validate"
+cp .truth/claims.jsonl claims.b5.bak
+python3 - "$CID_H" <<'PYEOF'
+import json, sys
+cid = sys.argv[1]
+# copy the genuine record's ts byte-for-byte -- NOT backdated. It ties
+# (ts, id) with the genuine claim, so file order alone would decide the
+# fold winner and two union-merge directions could disagree (INV-I).
+# ADR-008's strictly-earlier rule passed this; ADR-016 refuses it.
+genuine = next(json.loads(l) for l in open(".truth/claims.jsonl")
+               if json.loads(l).get("id") == cid)
+rec = {"id": cid, "kind": "claim", "actor": "agent-x", "session": "s-evil",
+       "ts": genuine["ts"],
+       "payload": {"text": "substitution via equal-ts copied-timestamp duplicate",
+                   "evidence_class": "UNVERIFIED", "cost_tier": "P0",
+                   "ttl_days": None, "evidence_paths": []}}
+open(".truth/claims.jsonl", "a").write(json.dumps(rec, sort_keys=True) + "\n")
+PYEOF
+if ! grep -q "equal-ts copied-timestamp" .truth/claims.jsonl; then
+  miss "fault injection failed: equal-ts duplicate was never appended"
+elif $T validate >/dev/null 2>&1; then
+  miss "validate passed an equal-ts substitution duplicate (C1 open -- INV-I falsifiable)"
+else
+  ok "validate failed the equal-ts substitution duplicate (C1 closed at the gate)"
+fi
+mv claims.b5.bak .truth/claims.jsonl
+
+say "FAULT B6 (ADR-016, C1): the fold's order is total -- a tied pair folds identically both ways"
+B6_OUT=$(python3 - <<'PYEOF'
+import json
+from importlib.machinery import SourceFileLoader
+tm = SourceFileLoader("truth", "scripts/truth").load_module()
+# two DISTINCT records tied on (ts, id): the fold must not depend on
+# which one the file lists first (canon() is the total third key)
+a = {"id":"tr-aaaaaaaa","kind":"claim","actor":"x","session":"s1",
+     "ts":"2026-07-01T00:00:00.000000+00:00",
+     "payload":{"text":"alpha","evidence_class":"UNVERIFIED","cost_tier":"P2",
+                "ttl_days":None,"evidence_paths":[]}}
+b = dict(a); b = json.loads(json.dumps(a)); b["payload"] = dict(a["payload"], text="beta")
+def winner(evs):
+    c = tm.fold([(i,e) for i,e in enumerate(evs)])[0]["tr-aaaaaaaa"]["claim"]
+    return c.get("text") or c.get("payload",{}).get("text")
+print("SAME" if winner([a,b]) == winner([b,a]) else "DIVERGED")
+PYEOF
+)
+if [ "$B6_OUT" = "SAME" ]; then
+  ok "fold is confluent on a tied (ts,id) pair -- file order does not decide the winner"
+else
+  miss "fold picked different winners by file order ($B6_OUT) -- (ts,id) not total"
+fi
+
+# ---- FAULTS TS1-TS3 (ADR-015): canonical timestamp profile ---------------
+say "FAULT TS1 (ADR-015): a fresh-id record with a Z-suffix ts must fail validate"
+cp .truth/claims.jsonl claims.ts1.bak
+python3 - <<'PYEOF'
+import json
+# Z is valid ISO 8601 UTC, but ASCII 'Z' > '+' -- the raw-string fold
+# would order this record inconsistently against +00:00 records at the
+# same instant, so the profile refuses the form outright
+rec={"id":"tr-00000ad5","kind":"claim","actor":"agent-x","session":"s-evil",
+     "ts":"2026-01-01T00:00:00.000000Z",
+     "payload":{"text":"honest fact in a Z-suffix timestamp","evidence_class":"UNVERIFIED",
+                "cost_tier":"P2","ttl_days":None,"evidence_paths":[]}}
+open(".truth/claims.jsonl","a").write(json.dumps(rec,sort_keys=True)+"\n")
+PYEOF
+if ! grep -q "Z-suffix timestamp" .truth/claims.jsonl; then
+  miss "fault injection failed: Z-suffix record was never appended"
+elif $T validate >/dev/null 2>&1; then
+  miss "validate passed a Z-suffix ts (non-canonical form breaks raw-string order)"
+else
+  ok "validate failed the Z-suffix ts (canonical profile enforced)"
+fi
+mv claims.ts1.bak .truth/claims.jsonl
+
+say "FAULT TS2 (ADR-015): a naive TRUTH_NOW override must still mint a canonical ts"
+TS2_OUT=$(TRUTH_NOW="2026-06-30T12:00:00" $T claim \
+  "canary ts2 canonical mint probe fact" --class UNVERIFIED --tier P2 \
+  --duplicate-ok 2>/dev/null)
+TS2_TS=$(tail -1 .truth/claims.jsonl | python3 -c "import json,sys; print(json.load(sys.stdin)['ts'])")
+if [ "$TS2_TS" = "2026-06-30T12:00:00.000000+00:00" ] && $T validate >/dev/null 2>&1; then
+  ok "naive override normalized to canonical UTC microseconds; validate green"
+else
+  miss "naive TRUTH_NOW minted '$TS2_TS' (expected 2026-06-30T12:00:00.000000+00:00)"
+fi
+
+say "FAULT TS3 (ADR-015): a real-clock append must not sort before the ledger tail (clock-push)"
+TS3_FUTURE=$(python3 -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)+timedelta(seconds=120)).isoformat(timespec='microseconds'))")
+TRUTH_NOW="$TS3_FUTURE" $T claim "canary ts3 future tail fact" \
+  --class UNVERIFIED --tier P2 --duplicate-ok >/dev/null 2>&1
+$T claim "canary ts3 real clock follower fact" \
+  --class UNVERIFIED --tier P2 --duplicate-ok >/dev/null 2>&1
+TS3_ORDER=$(tail -2 .truth/claims.jsonl | python3 -c "
+import json,sys
+a,b=[json.loads(l)['ts'] for l in sys.stdin]
+print('PUSHED' if b > a else 'INVERTED')")
+if [ "$TS3_ORDER" = "PUSHED" ] && $T validate >/dev/null 2>&1; then
+  ok "real-clock record bumped past the future tail; file order stays sort order"
+else
+  miss "real-clock append sorted before the ledger tail ($TS3_ORDER) -- clock-push inert"
+fi
 
 # ---- FAULT L (v0.4): re-verification must survive the next scan ----------
 say "FAULT L: re-verified claim must stay live across a subsequent scan"
@@ -596,6 +698,23 @@ else
   miss "$WK_DEP still blocked after dep closed"
 fi
 
+say "FAULT RL (ADR-002, HIGH-3): start --release returns a claimed item to open; refused from open"
+WK_REL=$($T issue "kernel issue for release probe" 2>/dev/null)
+$T start "$WK_REL" >/dev/null 2>&1                     # -> claimed
+# releasing a claimed item must put it back in ready (open, deps ok)
+$T start "$WK_REL" --release >/dev/null 2>&1
+if PATH="/usr/bin:/bin" $T ready | grep -q "^$WK_REL"; then
+  ok "start --release returned $WK_REL to the ready pool (claimed -> open)"
+else
+  miss "start --release did not return $WK_REL to open"
+fi
+# released is valid ONLY from claimed: a second release (now open) must refuse
+if $T start "$WK_REL" --release >/dev/null 2>&1; then
+  miss "start --release accepted from open state (transition guard missing)"
+else
+  ok "start --release refused from open -- released is valid only from claimed"
+fi
+
 say "FAULT R5 (ADR-002): kernel-as-tracker seam must join identically to native"
 NATIVE_OUT=$(PATH="/usr/bin:/bin" $T ready)
 SEAM_OUT=$($T issues --ready-json | $T ready --stdin)
@@ -682,7 +801,7 @@ python3 - "$WK_STALE" <<'PYEOF'
 import json, sys
 wid = sys.argv[1]
 rec = {"id": wid, "kind": "issue", "actor": "agent-x", "session": "s-evil",
-       "ts": "2099-01-01T00:00:00+00:00",
+       "ts": "2099-01-01T00:00:00.000000+00:00",
        "payload": {"title": "kernel issue on stale premise", "text": "",
                    "deps": [], "premises": []}}
 open(".truth/claims.jsonl", "a").write(json.dumps(rec, sort_keys=True) + "\n")
@@ -913,6 +1032,417 @@ if $T list --stale --json | grep -q "$CID_E" && \
   ok "claim $CID_E stale with reason 'anchor unreachable'"
 else
   miss "history rewrite left $CID_E trusted or unexplained"
+fi
+
+# =========================== sandbox 4 (TL-2: work-kernel discovery, v0.6.3)
+# Own sandbox on purpose: sandbox 1's adapter-seam checks (FAULT J) depend
+# on the ledger holding NO native issue records, and an issue record is a
+# permanent append.
+mkrepo "$TMP4"
+git add -A && git commit -qm "canary: init tl2"
+
+say "TL-2 (wk-968bc087): wk- records with no discovery of 'truth ready' must WARN"
+$T issue "tl2 canary work item" >/dev/null 2>&1
+if $T doctor 2>/dev/null | grep -q "WARN  work-kernel discovery"; then
+  ok "doctor warned: work kernel in use but invisible in discovery files"
+else
+  miss "doctor silent while the work kernel is invisible to agents"
+fi
+printf '# Agents\nTruth ledger: use scripts/truth; pick work with scripts/truth ready.\n' > AGENTS.md
+if $T doctor 2>/dev/null | grep -q "WARN  work-kernel discovery"; then
+  miss "doctor still warned though AGENTS.md names truth ready"
+else
+  ok "doctor quiet once a discovery file names truth ready"
+fi
+
+say "FAULT R10 (ADR-013): supersede releases HELD work; passing premises refused"
+echo "r10" > r10.txt
+git add -A && git commit -qm "canary: r10 watched file"
+CID_R10A=$($T claim "r10 fact alpha" --class VERIFIED \
+           --evidence-cmd "cat r10.txt" --paths "r10.txt" --tier P1)
+WK_R10=$($T issue "r10 premised work" --premise "$CID_R10A")
+CID_R10B=$($T claim "r10 corrected statement beta" --class UNVERIFIED --tier P1)
+if $T premise "$WK_R10" "$CID_R10B" --supersedes "$CID_R10A" >/dev/null 2>&1; then
+  miss "supersede accepted an unverified premise that passes ready as-is"
+else
+  ok "supersede refused while the old premise still passes ready"
+fi
+echo "changed" >> r10.txt
+git add r10.txt && git commit -qm "canary: touch r10 watched path"
+$T invalidate-scan --quiet
+if PATH="/usr/bin:/bin" $T ready | grep -q "^$WK_R10"; then
+  miss "issue $WK_R10 ready despite a stale premise (pre-supersede)"
+else
+  ok "issue $WK_R10 HELD on the stale premise"
+fi
+if $T premise "$WK_R10" "$CID_R10B" --supersedes "$CID_R10A" >/dev/null 2>&1; then
+  ok "supersede accepted for the stale premise"
+else
+  miss "supersede refused for a stale premise"
+fi
+if PATH="/usr/bin:/bin" $T ready | grep -q "^$WK_R10"; then
+  ok "supersede released the HELD issue (redirect honored by ready)"
+else
+  miss "issue $WK_R10 still HELD after supersede"; PATH="/usr/bin:/bin" $T ready || true
+fi
+
+say "FAULT AC1 (ADR-014): --accept-cmd with no accept-allow must fail closed"
+if $T issue "ac1 work" --accept-cmd "true" >/dev/null 2>&1; then
+  miss "issue filed an acceptance oracle with no .truth/accept-allow"
+else
+  ok "intake refused: acceptance allowlist absent (fail closed)"
+fi
+
+say "FAULT AC2 (ADR-014): unlisted oracle program refused; unsafe-ok stamps screened=false"
+printf 'true\nfalse\nsh\n' > .truth/accept-allow
+if $T issue "ac2 work" --accept-cmd "cargo test" >/dev/null 2>&1; then
+  miss "intake accepted an oracle program not in accept-allow"
+else
+  ok "intake refused the unlisted oracle program"
+fi
+WK_AC2=$($T issue "ac2 unscreened" --accept-cmd "cargo test" --accept-unsafe-ok 2>/dev/null)
+if grep "$WK_AC2" .truth/claims.jsonl | grep -q '"screened": false'; then
+  ok "unsafe-ok filed with accept.screened=false stamped"
+else
+  miss "unsafe-ok intake did not stamp screened=false"
+fi
+
+say "FAULT AC3 (ADR-014): failing oracle must refuse the close; work stays claimed"
+WK_AC3=$($T issue "ac3 red oracle" --accept-cmd "sh -c 'exit 1'" --accept-kind validation)
+$T start "$WK_AC3" >/dev/null
+if $T done "$WK_AC3" --basis "narrative says done" >/dev/null 2>&1; then
+  miss "done closed $WK_AC3 over a failing acceptance oracle"
+else
+  ok "done refused: oracle exit non-zero"
+fi
+if $T issues | grep "$WK_AC3" | grep -q claimed; then
+  ok "issue stayed claimed after the refused close"
+else
+  miss "issue status changed despite the refused close"
+fi
+
+say "FAULT AC4 (ADR-014): --accept-unsafe-ok must NOT bypass an oracle that ran and failed"
+if $T done "$WK_AC3" --basis "bypass attempt" --accept-unsafe-ok >/dev/null 2>&1; then
+  miss "--accept-unsafe-ok closed over a FAILING (executable) oracle"
+else
+  ok "unsafe-ok refused: it only covers oracles that cannot run"
+fi
+
+say "FAULT AC5 (ADR-014): passing oracle closes; event stamps executed+returncode 0"
+WK_AC5=$($T issue "ac5 green oracle" --accept-cmd "true")
+$T start "$WK_AC5" >/dev/null
+if $T done "$WK_AC5" --basis "oracle green" >/dev/null 2>&1; then
+  ok "done closed on the passing oracle"
+else
+  miss "done refused a passing oracle"
+fi
+if grep '"issue_event"' .truth/claims.jsonl | grep "$WK_AC5" \
+   | grep -q '"executed": true, "kind": "verification", "returncode": 0'; then
+  ok "close event carries accept {executed:true, returncode:0}"
+else
+  miss "close event missing the acceptance stamp"
+fi
+
+say "FAULT AC6 (ADR-014): unscreened oracle -- done refuses to execute; unsafe-ok close is stamped"
+$T start "$WK_AC2" >/dev/null
+if $T done "$WK_AC2" --basis "try plain close" >/dev/null 2>&1; then
+  miss "done executed (or skipped) an unscreened oracle on a plain close"
+else
+  ok "done refused to execute the unscreened oracle"
+fi
+$T done "$WK_AC2" --basis "conscious unscreened close" --accept-unsafe-ok >/dev/null 2>&1
+if grep '"issue_event"' .truth/claims.jsonl | grep "$WK_AC2" \
+   | grep -q '"executed": false'; then
+  ok "unsafe-ok close stamped executed=false on the event"
+else
+  miss "unsafe-ok close left no executed=false stamp"
+fi
+
+say "FAULT AC7 (ADR-014): --accept-kind without --accept-cmd refused; cancel skips the oracle"
+if $T issue "ac7 shape only" --accept-kind validation >/dev/null 2>&1; then
+  miss "intake accepted --accept-kind with no --accept-cmd"
+else
+  ok "intake refused the oracle shape with no oracle"
+fi
+WK_AC7=$($T issue "ac7 doomed work" --accept-cmd "sh -c 'exit 1'")
+$T start "$WK_AC7" >/dev/null
+if TRUTH_HUMAN=1 TRUTH_HUMAN_ACK="$WK_AC7" $T done "$WK_AC7" --cancel \
+   --basis "canary: killing failed work must not need its finish line" >/dev/null 2>&1; then
+  ok "cancel skipped the failing oracle (tombstone path unblocked)"
+else
+  miss "cancel was blocked by the acceptance oracle"
+fi
+if $T validate >/dev/null 2>&1; then
+  ok "ledger with acceptance records validates (schema mirror in sync)"
+else
+  miss "acceptance records fail validate"; $T validate || true
+fi
+
+say "FAULT AC8 (issue #7): exact path-form accept-allow entry admits the oracle; near-miss and absolute refused"
+mkdir -p tools && printf '#!/bin/sh\nexit 0\n' > tools/oracle.sh && chmod +x tools/oracle.sh
+git add tools && git commit -qm "canary: ac8 oracle" --no-verify
+printf 'true\nfalse\nsh\ntools/oracle.sh\n/bin/echo\n' > .truth/accept-allow
+WK_AC8=$($T issue "ac8 path oracle" --accept-cmd "tools/oracle.sh" 2>/dev/null)
+if [ -n "$WK_AC8" ]; then
+  ok "listed repo-relative path oracle accepted at filing"
+  $T start "$WK_AC8" >/dev/null
+  if $T done "$WK_AC8" --basis "ac8 close" >/dev/null 2>&1; then
+    ok "path-form oracle executed and closed the issue"
+  else
+    miss "path-form oracle did not execute at done"
+  fi
+else
+  miss "listed repo-relative path oracle refused at filing"
+fi
+if $T issue "ac8 near miss" --accept-cmd "tools/oracle2.sh" >/dev/null 2>&1; then
+  miss "unlisted path oracle accepted"
+else
+  ok "unlisted path oracle refused (exact match only)"
+fi
+if $T issue "ac8 absolute" --accept-cmd "/bin/echo hi" >/dev/null 2>&1; then
+  miss "absolute path oracle accepted despite being listed"
+else
+  ok "absolute path refused even when listed (inert entry)"
+fi
+
+say "FAULT W5 (issue #5): impact --inverse lists dark files, keeps watched ones, exits 4"
+echo "dark" > lone.txt
+mkdir -p watched-dir && echo "wf" > watched-dir/f.txt
+git add lone.txt watched-dir && git commit -qm "canary: inverse fixtures" --no-verify
+INV_OUT=$($T impact --inverse 2>/dev/null); INV_RC=$?
+if [ "$INV_RC" -eq 4 ] && printf '%s\n' "$INV_OUT" | grep -qx "lone.txt"; then
+  ok "dark file lone.txt listed, exit 4"
+else
+  miss "inverse missed lone.txt or wrong exit ($INV_RC)"
+fi
+# CID_R10A is STALE and watches r10.txt -- stale is knowledge needing
+# re-check, not absence: r10.txt must NOT be dark.
+if printf '%s\n' "$INV_OUT" | grep -qx "r10.txt"; then
+  miss "stale claim's watched file r10.txt reported dark"
+else
+  ok "stale claim still watches: r10.txt not dark"
+fi
+
+say "FAULT W6 (issue #5): fully watched --under scope exits 0 silent"
+$T claim "watched-dir contents are canary fixtures" --class UNVERIFIED \
+   --paths "watched-dir/**" >/dev/null
+if $T impact --inverse --under watched-dir >/dev/null 2>&1; then
+  ok "fully watched scope: exit 0"
+else
+  miss "fully watched scope did not exit 0"
+fi
+
+say "FAULT W7 (issue #5): retraction kills the watch -- file goes dark again"
+CID_W7=$($T claim "lone.txt is a canary fixture" --class UNVERIFIED --paths "lone.txt")
+if $T impact --inverse 2>/dev/null | grep -qx "lone.txt"; then
+  miss "lone.txt dark despite an active claim watching it"
+else
+  ok "active claim watching lone.txt removes it from dark"
+fi
+TRUTH_HUMAN=1 TRUTH_HUMAN_ACK="$CID_W7" $T verdict "$CID_W7" retracted \
+  --basis "canary: fixture retired" >/dev/null 2>&1
+if $T impact --inverse 2>/dev/null | grep -qx "lone.txt"; then
+  ok "retracted claim's watch died: lone.txt dark again"
+else
+  miss "retracted claim still counted as watching lone.txt"
+fi
+
+say "FAULT W8 (issue #5): usage refusals -- positionals, dangling flags, empty scope"
+if $T impact --inverse lone.txt >/dev/null 2>&1; then
+  miss "--inverse accepted positional paths"
+else
+  ok "--inverse with positional paths refused"
+fi
+if $T impact --under watched-dir lone.txt >/dev/null 2>&1; then
+  miss "--under accepted without --inverse"
+else
+  ok "--under without --inverse refused"
+fi
+$T impact --inverse --under no-such-dir >/dev/null 2>&1; W8_RC=$?
+if [ "$W8_RC" -eq 2 ]; then
+  ok "empty scope exits 2 (usage), never a false-green 0"
+else
+  miss "empty scope exited $W8_RC instead of 2"
+fi
+
+# ================= sandbox 5 (SC: session-close survival gate, wk-7218c85b)
+# Own sandbox: the arms need exact control of tree/kernel/claim state, and
+# sandbox 4 ends with uncommitted ledger appends by design.
+mkrepo "$TMP5"
+git add -A && git commit -qm "canary: init sc"
+
+say "FAULT SC (session-close): survival gate must FAIL on holes, WARN on debt, pass clean"
+if bash scripts/session-close.sh >/dev/null 2>&1; then
+  ok "clean repo: safe to close (exit 0)"
+else
+  miss "clean repo refused"; bash scripts/session-close.sh || true
+fi
+echo probe > sc-dirty.txt
+if bash scripts/session-close.sh >/dev/null 2>&1; then
+  miss "dirty tree passed the survival gate"
+else
+  ok "dirty tree refused (uncommitted changes are a survival hole)"
+fi
+git add -A && git commit -qm "canary: sc file"
+WK_SC=$($T issue "sc probe item" 2>/dev/null)
+$T start "$WK_SC" >/dev/null
+git add .truth/claims.jsonl && git commit -qm "canary: sc claimed" --no-verify
+if bash scripts/session-close.sh 2>/dev/null | grep -q "still claimed"; then
+  ok "claimed work item refused with the claimed-count named"
+else
+  miss "in-flight claimed item not flagged"
+fi
+$T start "$WK_SC" --release --basis "canary: hand back" >/dev/null
+$T claim "sc unverified probe fact" --class UNVERIFIED --tier P2 >/dev/null
+git add .truth/claims.jsonl && git commit -qm "canary: sc released + unverified" --no-verify
+SC_OUT=$(bash scripts/session-close.sh 2>/dev/null); SC_RC=$?
+if [ "$SC_RC" -eq 0 ] && printf '%s' "$SC_OUT" | grep -q "WARN.*unverified"; then
+  ok "unverified claims WARN without blocking (triage debt, not a hole)"
+else
+  miss "unverified-claim debt handling wrong (rc=$SC_RC)"
+fi
+mkdir -p scripts/session-gates.d
+printf '#!/usr/bin/env bash\nexit 1\n' > scripts/session-gates.d/always-fail.sh
+git add -A && git commit -qm "canary: sc failing gate" --no-verify
+if bash scripts/session-close.sh >/dev/null 2>&1; then
+  miss "failing project gate did not block the close"
+else
+  ok "failing scripts/session-gates.d/ gate refused the close"
+fi
+
+say "FAULT BL1 (issue #3): baseline at an older ref excludes later records; HEAD includes them"
+git add .truth/claims.jsonl
+git commit -qm "canary: bl ref point" --no-verify >/dev/null 2>&1 || true
+REF_BL=$(git rev-parse HEAD)
+CID_BL=$($T claim "bl canary fact" --class UNVERIFIED --tier P2)
+TRUTH_SESSION=s-canary-verifier $T verdict "$CID_BL" agree --basis "canary bl" >/dev/null
+git add .truth/claims.jsonl && git commit -qm "canary: bl new claim" --no-verify
+if $T baseline "$REF_BL" --json 2>/dev/null | grep -q "$CID_BL"; then
+  miss "older baseline contains a claim filed after it"
+else
+  ok "older baseline excludes the later claim"
+fi
+if $T baseline HEAD --json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if '$CID_BL' in d['claims']['ids'].get('live',[]) else 1)"; then
+  ok "HEAD baseline shows the new claim live"
+else
+  miss "HEAD baseline missing the new live claim"
+fi
+
+say "FAULT BL2 (issue #3): diff shows the born claim, exit 0"
+BL_DIFF=$($T baseline "$REF_BL" --diff HEAD 2>/dev/null); BL_RC=$?
+if [ "$BL_RC" -eq 0 ] && printf '%s\n' "$BL_DIFF" | grep -q "+ $CID_BL"; then
+  ok "diff lists $CID_BL as born, exit 0"
+else
+  miss "diff missed the born claim or wrong exit ($BL_RC)"
+fi
+
+say "FAULT BL3 (issue #3): a record vanishing between refs must alarm (exit 5, 10007 omission)"
+git checkout -qb bl-rewrite
+# drop the last TWO lines (CID_BL's claim AND its verdict) -- deleting
+# only the verdict would be a status transition, not a disappearance
+sed -i.bak '$d' .truth/claims.jsonl && sed -i.bak '$d' .truth/claims.jsonl
+rm -f .truth/claims.jsonl.bak
+git add .truth/claims.jsonl && git commit -qm "canary: rewritten ledger" --no-verify
+git checkout -q main
+$T baseline main --diff bl-rewrite >/dev/null 2>&1; BL3_RC=$?
+if [ "$BL3_RC" -eq 5 ]; then
+  ok "disappeared record raised exit 5"
+else
+  miss "rewritten-history diff exited $BL3_RC instead of 5"
+fi
+if $T baseline main --diff bl-rewrite 2>/dev/null | grep -q "DISAPPEARED"; then
+  ok "diff names the DISAPPEARED record"
+else
+  miss "diff silent about the disappeared record"
+fi
+
+say "FAULT BL4 (issue #3): unreadable ref exits 2"
+$T baseline no-such-ref >/dev/null 2>&1; BL4_RC=$?
+if [ "$BL4_RC" -eq 2 ]; then
+  ok "bad ref exits 2 (usage)"
+else
+  miss "bad ref exited $BL4_RC instead of 2"
+fi
+
+say "FAULT C1 (issue #4): contradicts edge on two live claims folds both to DISPUTED and HOLDs premised work"
+CID_C1=$($T claim "c-fixture formula alpha" --class UNVERIFIED --tier P1)
+CID_C2=$($T claim "c-fixture formula beta variant disagreeing" --class UNVERIFIED --tier P1 --duplicate-ok)  # contradicting claims are inherently near-dups: G8 fires, --duplicate-ok is the honest path
+TRUTH_SESSION=s-canary-verifier $T verdict "$CID_C1" agree --basis "canary c" >/dev/null
+TRUTH_SESSION=s-canary-verifier $T verdict "$CID_C2" agree --basis "canary c" >/dev/null
+WK_C1=$($T issue "work standing on alpha" --premise "$CID_C1")
+if PATH="/usr/bin:/bin" $T ready | grep -q "^$WK_C1"; then
+  ok "premised work READY while both claims live"
+else
+  miss "issue $WK_C1 not ready before the dispute"
+fi
+$T contradicts "$CID_C1" "$CID_C2" --basis "canary: the two formulas cannot both hold" >/dev/null
+if $T list --disputed | grep -q "$CID_C1" && $T list --disputed | grep -q "$CID_C2"; then
+  ok "both sides derive DISPUTED"
+else
+  miss "DISPUTED not derived for both sides"; $T list --disputed || true
+fi
+if PATH="/usr/bin:/bin" $T ready | grep -q "^$WK_C1"; then
+  miss "issue $WK_C1 still READY on a disputed premise"
+else
+  ok "premised work HELD by the dispute"
+fi
+if $T queue | grep "$CID_C1" | grep -q "$CID_C2"; then
+  ok "queue names the counterpart on the disputed row"
+else
+  miss "queue row missing the counterpart"; $T queue || true
+fi
+
+say "FAULT C2 (issue #4): retracting one side resolves the dispute -- the other returns live"
+TRUTH_HUMAN=1 TRUTH_HUMAN_ACK="$CID_C2" $T verdict "$CID_C2" retracted \
+  --basis "canary: beta loses" >/dev/null 2>&1
+if $T list --live | grep -q "$CID_C1" && ! $T list --disputed | grep -q "$CID_C1"; then
+  ok "surviving side live again after the retraction"
+else
+  miss "dispute did not resolve on retraction"
+fi
+if PATH="/usr/bin:/bin" $T ready | grep -q "^$WK_C1"; then
+  ok "premised work released after resolution"
+else
+  miss "issue $WK_C1 still HELD after resolution"
+fi
+
+say "FAULT C3 (issue #4): intake refusals -- self-edge, unknown id, duplicate either direction"
+if $T contradicts "$CID_C1" "$CID_C1" --basis "x" >/dev/null 2>&1; then
+  miss "self-edge accepted"
+else
+  ok "self-edge refused"
+fi
+if $T contradicts "$CID_C1" tr-00000bad --basis "x" >/dev/null 2>&1; then
+  miss "unknown claim accepted"
+else
+  ok "unknown claim refused"
+fi
+CID_C3=$($T claim "c-fixture formula gamma third contender" --class UNVERIFIED --tier P2 --duplicate-ok)
+$T contradicts "$CID_C1" "$CID_C3" --basis "canary dup seed" >/dev/null
+if $T contradicts "$CID_C3" "$CID_C1" --basis "reversed dup" >/dev/null 2>&1; then
+  miss "duplicate edge accepted in reverse direction"
+else
+  ok "duplicate edge refused either direction"
+fi
+
+say "FAULT C4 (issue #4): edge with a non-live side files DORMANT -- no status change"
+if $T list --live | grep -q "$CID_C1"; then
+  ok "live side untouched by the dormant edge (gamma is unverified)"
+else
+  miss "dormant edge changed a status"
+fi
+if $T contradicts "$CID_C2" "$CID_C3" --basis "x" >/dev/null 2>&1; then
+  miss "edge to a RETRACTED claim accepted (dispute already resolved)"
+else
+  ok "edge to a retracted claim refused"
+fi
+
+say "FAULT C5 (issue #4): contradicts records survive validate and the commit gate"
+git add .truth/claims.jsonl && git commit -qm "canary: c-edges" --no-verify
+if $T validate >/dev/null 2>&1; then
+  ok "ledger with contradicts records validates (mirror+schema in sync)"
+else
+  miss "contradicts records fail validate"; $T validate || true
 fi
 
 say ""

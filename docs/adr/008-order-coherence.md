@@ -12,6 +12,14 @@ falsifier). v0.6.2 makes `order_check` compare the same string `fold`
 sorts on, closing it (canary B3, B4). A redundant validate-layer non-
 ISO-ts reject (F5) is deferred: it needs the JSON-schema mirror's
 format:date-time enforced in lockstep or FS-2 flags drift.
+Amended by: ADR-015 (2026-07-18) — the deferred F5 check shipped, and
+stricter than deferred: not merely ISO-vs-junk but a single canonical
+profile (fixed-width UTC microseconds), as schema `pattern` + mirror
+`TS_RE` in lockstep with FS-2 holding the two together — an
+independent spec-only review (pi) found `format: date-time` annotative
+in draft-07 and offset heterogeneity breaking raw-string order for
+honest non-CLI writers (INV-I), which met exactly this note's
+condition.
 Date: 2026-07-11
 Supersedes: — (converts the paper's §8 item 6 composition gap from
 accepted to detected-at-commit)

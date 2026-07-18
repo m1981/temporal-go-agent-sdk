@@ -82,6 +82,25 @@ class TestConfluence(unittest.TestCase):
         results = {status_of(list(p)) for p in itertools.permutations(evs)}
         self.assertEqual(results, {"retracted"})
 
+    def test_duplicate_id_equal_ts_folds_to_one_content(self):
+        """ADR-016/C1: two DISTINCT claim records sharing both id and ts
+        (the copied-timestamp forgery) tie on (ts, id). Before the fix a
+        stable sort resolved the tie by file position, so the two
+        union-merge file orders folded to different CONTENT -- INV-I
+        falsified with no backdated ts. fold_key()'s canon() third key
+        makes the winner a function of content, identical in every
+        order. (The gate refuses this pair at validate; this locks the
+        fold itself as confluent regardless.)"""
+        genuine = claim(text="the database is safe to drop")
+        forged = claim(text="DROP DATABASE prod")  # same id + ts, new text
+        winners = set()
+        for order in itertools.permutations([genuine, forged]):
+            claims, _ = tm.fold(list(enumerate(order, 1)))
+            c = claims["tr-000000aa"]["claim"]
+            winners.add(c.get("text") or c.get("payload", {}).get("text"))
+        self.assertEqual(len(winners), 1,
+                         f"fold picked different content by file order: {winners}")
+
 
 class TestNoResurrectionByAppend(unittest.TestCase):
     """F6: a later duplicate claim id must not reset status (this is the

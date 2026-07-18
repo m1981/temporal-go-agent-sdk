@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "truth-ledger-record.v0.6",
+  "$id": "truth-ledger-record.v0.7",
   "title": "Truth ledger record",
   "description": "One line of .truth/claims.jsonl. The ledger is append-only and event-sourced: status is never stored, only derived by folding records in (ts, id) order. v0.5 adds the ADR-002 work kernel kinds: `issue` (wk- envelope id) and `issue_event`. This schema is the durable contract; scripts/truth validate implements a stdlib mirror of it.",
   "type": "object",
@@ -24,7 +24,8 @@
         "invalidation",
         "premise",
         "issue",
-        "issue_event"
+        "issue_event",
+        "contradicts"
       ]
     },
     "actor": {
@@ -37,7 +38,8 @@
     },
     "ts": {
       "type": "string",
-      "format": "date-time"
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}\\+00:00$"
     },
     "payload": {
       "type": "object"
@@ -114,7 +116,7 @@
                   "type": "string",
                   "pattern": "^tr-[0-9a-f]{8}$"
                 },
-                "description": "MEDIUM-1: the active claim ids a --duplicate-ok override declared this claim distinct from"
+                "description": "MEDIUM-1: the active claim ids a --duplicate-ok override declared this claim distinct from -- the auditable trace of the near-duplicate (G8) bypass"
               },
               "evidence": {
                 "type": "object",
@@ -312,6 +314,10 @@
               "claim": {
                 "type": "string",
                 "pattern": "^tr-[0-9a-f]{8}$"
+              },
+              "supersedes": {
+                "type": "string",
+                "pattern": "^tr-[0-9a-f]{8}$"
               }
             }
           }
@@ -327,7 +333,8 @@
               "verdict",
               "invalidation",
               "premise",
-              "issue_event"
+              "issue_event",
+              "contradicts"
             ]
           }
         }
@@ -336,6 +343,41 @@
         "properties": {
           "id": {
             "pattern": "^tr-[0-9a-f]{8}$"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "contradicts"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "a",
+              "b",
+              "basis"
+            ],
+            "properties": {
+              "a": {
+                "type": "string",
+                "pattern": "^tr-[0-9a-f]{8}$"
+              },
+              "b": {
+                "type": "string",
+                "pattern": "^tr-[0-9a-f]{8}$"
+              },
+              "basis": {
+                "type": "string",
+                "minLength": 1,
+                "description": "issue #4: why the two claims cannot both hold -- the attackable record; while both endpoints would otherwise be live, both derive DISPUTED"
+              }
+            }
           }
         }
       }
@@ -378,6 +420,30 @@
                   "type": "string",
                   "pattern": "^tr-[0-9a-f]{8}$"
                 }
+              },
+              "accept": {
+                "type": "object",
+                "description": "ADR-014: executable finish line declared at birth; `done` runs command from the repo root and refuses the close on non-zero exit. screened=false means filed with --accept-unsafe-ok; done then refuses to execute it.",
+                "required": [
+                  "command",
+                  "kind",
+                  "screened"
+                ],
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "enum": [
+                      "verification",
+                      "validation"
+                    ]
+                  },
+                  "screened": {
+                    "type": "boolean"
+                  }
+                }
               }
             }
           }
@@ -415,6 +481,71 @@
               },
               "basis": {
                 "type": "string"
+              },
+              "accept": {
+                "type": "object",
+                "description": "ADR-014: what happened to the acceptance oracle at close. executed=true requires returncode 0 (a failing oracle never closes); executed=false means the close was forced with --accept-unsafe-ok on an unscreened oracle.",
+                "required": [
+                  "executed"
+                ],
+                "properties": {
+                  "command": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "verification",
+                      "validation"
+                    ]
+                  },
+                  "executed": {
+                    "type": "boolean"
+                  },
+                  "returncode": {
+                    "const": 0
+                  },
+                  "screened": {
+                    "type": "boolean"
+                  }
+                },
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "executed": {
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "executed"
+                      ]
+                    },
+                    "then": {
+                      "required": [
+                        "returncode"
+                      ]
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "executed": {
+                          "const": false
+                        }
+                      },
+                      "required": [
+                        "executed"
+                      ]
+                    },
+                    "then": {
+                      "not": {
+                        "required": [
+                          "returncode"
+                        ]
+                      }
+                    }
+                  }
+                ]
               }
             },
             "allOf": [

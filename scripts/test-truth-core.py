@@ -30,7 +30,7 @@ tm = importlib.util.module_from_spec(_spec)
 _loader.exec_module(tm)
 
 NOW = datetime(2026, 7, 5, 12, 0, 0, tzinfo=timezone.utc)
-TS = "2026-07-01T00:00:00+00:00"
+TS = "2026-07-01T00:00:00.000000+00:00"  # ADR-015 canonical profile
 
 def rec(kind, payload, rid="tr-00000001", ts=TS):
     return {"id": rid, "kind": kind, "actor": "t", "session": "s",
@@ -357,6 +357,77 @@ class TestEvidenceScreen(unittest.TestCase):
         self.assertIsNone(tm.screen_evidence_command("find . -name x", ALLOW))
         self.assertIsNone(tm.screen_evidence_command(
             "grep -rn x . | sort | wc -l", ALLOW))
+
+class TestAcceptScreen(unittest.TestCase):
+    """ADR-014: same structural screen, its own allowlist -- the refusal
+    messages must name .truth/accept-allow and the accept escape hatch,
+    never ADR-009's evidence vocabulary (a message naming the wrong list
+    teaches the wrong fix)."""
+    ACC = ["pytest", "bash", "python3"]
+
+    def test_allowlisted_oracle_passes(self):
+        self.assertIsNone(tm.screen_accept_command("pytest -q tests", self.ACC))
+        self.assertIsNone(tm.screen_accept_command(
+            "python3 exercises/harness/runner.py leg --strict", self.ACC))
+
+    def test_unlisted_program_names_accept_allow(self):
+        err = tm.screen_accept_command("cargo test", self.ACC)
+        self.assertIn(tm.ACCEPT_ALLOW_REL, err)
+        self.assertIn("--accept-unsafe-ok", err)
+        self.assertNotIn(tm.EVIDENCE_ALLOW_REL, err)
+
+    def test_missing_allowlist_fails_closed_naming_accept_allow(self):
+        err = tm.screen_accept_command("pytest -q", None)
+        self.assertIn(tm.ACCEPT_ALLOW_REL, err)
+        self.assertIn("--accept-cmd", err)
+
+    def test_structural_rules_still_apply(self):
+        # one screen implementation (the F1/F5 drift lesson): command
+        # substitution, path-form programs, and real-file sinks are
+        # refused for oracles exactly as for evidence
+        self.assertIsNotNone(tm.screen_accept_command(
+            "pytest $(cat pwn)", self.ACC))
+        self.assertIsNotNone(tm.screen_accept_command(
+            "./run_tests.sh", self.ACC))
+        self.assertIsNotNone(tm.screen_accept_command(
+            "pytest -q > results.txt", self.ACC))
+
+    def test_path_form_entry_admits_exact_oracle(self):
+        """Issue #7: an allowlisted exact repo-relative path runs as an
+        oracle; near-misses and traversals do not."""
+        acc = ["bash", ".venv/bin/python", "./gradlew"]
+        self.assertIsNone(tm.screen_accept_command(
+            ".venv/bin/python scripts/test-truth-core.py", acc))
+        self.assertIsNone(tm.screen_accept_command("./gradlew test", acc))
+        # exact match only -- a different path is refused with the hint
+        err = tm.screen_accept_command(".venv/bin/pytest -q", acc)
+        self.assertIn(tm.ACCEPT_ALLOW_REL, err)
+        # unlisted path still refused
+        self.assertIsNotNone(tm.screen_accept_command("./run.sh", acc))
+
+    def test_path_form_entry_never_absolute_or_traversal(self):
+        # even a LISTED absolute or ..-path is refused -- the entry is
+        # inert, not a policy the screen will honor
+        acc = ["/usr/bin/python3", "../outside/tool", ".venv/bin/python"]
+        self.assertIsNotNone(tm.screen_accept_command(
+            "/usr/bin/python3 -m pytest", acc))
+        self.assertIsNotNone(tm.screen_accept_command(
+            "../outside/tool run", acc))
+
+    def test_evidence_screen_still_refuses_paths_unconditionally(self):
+        # ADR-009 unchanged: a path program is refused for EVIDENCE even
+        # if some allowlist listed it -- different trust seam
+        self.assertIsNotNone(tm.screen_evidence_command(
+            ".venv/bin/python x.py", ALLOW + [".venv/bin/python"]))
+
+    def test_evidence_screen_messages_unchanged(self):
+        # regression: the parameterization must not rewrite ADR-009's
+        # messages -- they still name evidence-allow and its escape hatch
+        err = tm.screen_evidence_command("curl x", ALLOW)
+        self.assertIn(tm.EVIDENCE_ALLOW_REL, err)
+        self.assertIn("--evidence-unsafe-ok", err)
+        err = tm.screen_evidence_command("grep x f.txt", None)
+        self.assertIn(tm.EVIDENCE_ALLOW_REL, err)
 
 # --------------------------------------------- order coherence (ADR-008)
 
@@ -810,6 +881,79 @@ class TestIssuePremiseMerge(unittest.TestCase):
                                    {"w": ["tr-000000c1"]})
         self.assertEqual(merged["w"], ["tr-000000c1"])
 
+# --------------------------------------------- premise supersede (ADR-013)
+
+class TestSupersedes(unittest.TestCase):
+    def _redirect(self, issue, old, new, ts):
+        return rec("premise", {"issue": issue, "claim": new,
+                               "supersedes": old}, ts=ts)
+
+    def test_redirect_rewrites_merged_premises(self):
+        supers = tm.fold_supersedes(events(
+            self._redirect("wk-00000001", "tr-000000d1", "tr-000000d2",
+                           "2026-07-01T00:00:00+00:00")))
+        out = tm.apply_supersedes({"wk-00000001": ["tr-000000d1"]}, supers)
+        self.assertEqual(out, {"wk-00000001": ["tr-000000d2"]})
+
+    def test_redirect_scoped_to_one_issue(self):
+        supers = tm.fold_supersedes(events(
+            self._redirect("wk-00000001", "tr-000000d1", "tr-000000d2",
+                           "2026-07-01T00:00:00+00:00")))
+        out = tm.apply_supersedes({"wk-00000001": ["tr-000000d1"],
+                                   "wk-00000002": ["tr-000000d1"]}, supers)
+        self.assertEqual(out["wk-00000001"], ["tr-000000d2"])
+        self.assertEqual(out["wk-00000002"], ["tr-000000d1"])
+
+    def test_chain_follows_to_fixed_point_and_dedupes(self):
+        supers = tm.fold_supersedes(events(
+            self._redirect("w", "tr-000000d1", "tr-000000d2",
+                           "2026-07-01T00:00:00+00:00"),
+            self._redirect("w", "tr-000000d2", "tr-000000d3",
+                           "2026-07-01T01:00:00+00:00")))
+        out = tm.apply_supersedes({"w": ["tr-000000d1", "tr-000000d3"]},
+                                  supers)
+        self.assertEqual(out["w"], ["tr-000000d3"])
+
+    def test_cycle_stops_at_first_repeat(self):
+        supers = tm.fold_supersedes(events(
+            self._redirect("w", "tr-000000d1", "tr-000000d2",
+                           "2026-07-01T00:00:00+00:00"),
+            self._redirect("w", "tr-000000d2", "tr-000000d1",
+                           "2026-07-01T01:00:00+00:00")))
+        out = tm.apply_supersedes({"w": ["tr-000000d1"]}, supers)
+        # ADR-013 clarified (HIGH-2): a 2-cycle a->b->a entered at a
+        # resolves back to a -- a deterministic no-op, not an escape
+        self.assertEqual(out["w"], ["tr-000000d1"])
+
+    def test_chain_into_cycle_resolves_to_entry_point(self):
+        # ADR-013 clarified (HIGH-2): the effective premise on a cycle is
+        # the FIRST REPEATED value, which for a chain into a cycle is the
+        # cycle's entry point, not the chain's start. P->Q->R->Q from P
+        # resolves to Q. This is the case the prose omitted and the
+        # 2-cycle test alone did not distinguish.
+        supers = tm.fold_supersedes(events(
+            self._redirect("w", "tr-000000dP", "tr-000000dQ",
+                           "2026-07-01T00:00:00+00:00"),
+            self._redirect("w", "tr-000000dQ", "tr-000000dR",
+                           "2026-07-01T01:00:00+00:00"),
+            self._redirect("w", "tr-000000dR", "tr-000000dQ",
+                           "2026-07-01T02:00:00+00:00")))
+        out = tm.apply_supersedes({"w": ["tr-000000dP"]}, supers)
+        self.assertEqual(out["w"], ["tr-000000dQ"])
+
+    def test_last_wins_confluent_under_permutation(self):
+        e1 = self._redirect("w", "tr-000000d1", "tr-000000d2",
+                            "2026-07-01T00:00:00+00:00")
+        e2 = self._redirect("w", "tr-000000d1", "tr-000000d3",
+                            "2026-07-01T01:00:00+00:00")
+        for order in ((e1, e2), (e2, e1)):
+            supers = tm.fold_supersedes(events(*order))
+            self.assertEqual(supers[("w", "tr-000000d1")], "tr-000000d3")
+
+    def test_no_redirects_is_identity(self):
+        prem = {"w": ["tr-000000d1"]}
+        self.assertEqual(tm.apply_supersedes(prem, {}), prem)
+
 # ------------------------------------------------- impact query (ADR-005)
 
 class TestImpact(unittest.TestCase):
@@ -864,6 +1008,208 @@ class TestImpact(unittest.TestCase):
         rows = tm.impact_report(["src/x.py"], claims, issues, premises)
         self.assertEqual(rows[0]["holds"], ["bd-x1"])
 
+class TestDisputed(unittest.TestCase):
+    """Issue #4: the contradicts edge and the DISPUTED post-pass."""
+    def _base(self, verdicts=("agree", "agree")):
+        evs = [rec("claim", claim_p(text="formula alpha"), rid="tr-000000d1"),
+               rec("claim", claim_p(text="formula beta"), rid="tr-000000d2")]
+        for i, v in enumerate(verdicts):
+            if v:
+                evs.append(rec("verdict", {"claim": f"tr-000000d{i+1}",
+                                           "verdict": v, "basis": "b"},
+                               rid=f"tr-000000e{i+1}",
+                               ts="2026-07-02T00:00:00+00:00"))
+        return evs
+
+    def _edge(self, ts="2026-07-03T00:00:00+00:00", rid="tr-000000f1",
+              a="tr-000000d1", b="tr-000000d2"):
+        return rec("contradicts", {"a": a, "b": b, "basis": "incompatible"},
+                   rid=rid, ts=ts)
+
+    def test_both_live_fold_disputed_with_counterpart(self):
+        claims, _ = tm.fold(events(*self._base(), self._edge()))
+        for cid, other in (("tr-000000d1", "tr-000000d2"),
+                           ("tr-000000d2", "tr-000000d1")):
+            self.assertEqual(claims[cid]["status"], "disputed")
+            self.assertEqual(claims[cid]["disputed_with"], [other])
+            self.assertEqual(claims[cid]["status_ts"],
+                             "2026-07-03T00:00:00+00:00")
+
+    def test_dormant_when_either_side_not_live(self):
+        for v in ("diverge", "retracted", None):
+            claims, _ = tm.fold(events(*self._base(("agree", v)),
+                                       self._edge()))
+            self.assertEqual(claims["tr-000000d1"]["status"], "live",
+                             f"edge fired against a {v or 'unverified'} side")
+
+    def test_resolution_by_killing_one_side(self):
+        evs = self._base() + [self._edge(),
+                              rec("verdict", {"claim": "tr-000000d2",
+                                              "verdict": "retracted",
+                                              "basis": "loser"},
+                                  rid="tr-000000e9",
+                                  ts="2026-07-04T00:00:00+00:00")]
+        claims, _ = tm.fold(events(*evs))
+        self.assertEqual(claims["tr-000000d1"]["status"], "live")
+        self.assertEqual(claims["tr-000000d2"]["status"], "retracted")
+
+    def test_multi_edge_uses_underlying_statuses(self):
+        # A-B and A-C: all three live underneath -> all disputed; C's
+        # fate must not depend on whether A-B folded first
+        evs = self._base() + [
+            rec("claim", claim_p(text="formula gamma"), rid="tr-000000d3"),
+            rec("verdict", {"claim": "tr-000000d3", "verdict": "agree",
+                            "basis": "b"}, rid="tr-000000e3",
+                ts="2026-07-02T00:00:00+00:00"),
+            self._edge(rid="tr-000000f1"),
+            self._edge(rid="tr-000000f2", a="tr-000000d1", b="tr-000000d3",
+                       ts="2026-07-03T01:00:00+00:00")]
+        claims, _ = tm.fold(events(*evs))
+        self.assertEqual(claims["tr-000000d3"]["status"], "disputed")
+        self.assertEqual(claims["tr-000000d1"]["disputed_with"],
+                         ["tr-000000d2", "tr-000000d3"])
+
+    def test_hand_crafted_self_edge_is_inert(self):
+        claims, _ = tm.fold(events(*self._base(),
+                                   self._edge(a="tr-000000d1",
+                                              b="tr-000000d1")))
+        self.assertEqual(claims["tr-000000d1"]["status"], "live")
+
+    def test_disputed_blocks_premises_and_queues_both(self):
+        claims, _ = tm.fold(events(*self._base(), self._edge()))
+        passes, _ = tm.premise_check("disputed", "P1")
+        self.assertFalse(passes)
+        rows = tm.queue_rows(claims, NOW)
+        queued = {r["id"]: r["reason"] for r in rows}
+        self.assertIn("tr-000000d1", queued)
+        self.assertIn("tr-000000d2", queued["tr-000000d1"])
+
+class TestBaseline(unittest.TestCase):
+    """Issue #3 (10007): snapshot of one fold, delta of two."""
+    def _events_a(self):
+        return events(
+            rec("claim", claim_p(), rid="tr-000000a1"),
+            rec("claim", claim_p(text="second fact"), rid="tr-000000a2"),
+            issue_rec(rid="wk-000000b1"))
+
+    def _events_b(self):
+        return self._events_a() + events(
+            rec("verdict", {"claim": "tr-000000a1", "verdict": "agree",
+                            "basis": "b"}, rid="tr-000000a3",
+                ts="2026-07-02T00:00:00+00:00"),
+            rec("claim", claim_p(text="third fact"), rid="tr-000000a4",
+                ts="2026-07-02T00:00:00+00:00"),
+            issue_ev("closed", ref="wk-000000b1", basis="done",
+                     ts="2026-07-02T00:00:00+00:00"))
+
+    def test_snapshot_counts_and_ids(self):
+        s = tm.baseline_snapshot(self._events_a())
+        self.assertEqual(s["records"], 3)
+        self.assertEqual(s["claims"]["by_status"], {"unverified": 2})
+        self.assertEqual(s["claims"]["ids"]["unverified"],
+                         ["tr-000000a1", "tr-000000a2"])
+        self.assertEqual(s["issues"]["by_status"], {"open": 1})
+        self.assertEqual(s["claims"]["by_tier"], {"P2": 2})
+
+    def test_snapshot_tier_excludes_retracted(self):
+        evs = self._events_a() + events(
+            rec("verdict", {"claim": "tr-000000a2", "verdict": "retracted",
+                            "basis": "dead"}, rid="tr-000000a9",
+                ts="2026-07-02T00:00:00+00:00"))
+        s = tm.baseline_snapshot(evs)
+        self.assertEqual(s["claims"]["by_tier"], {"P2": 1})
+        self.assertEqual(s["claims"]["by_status"],
+                         {"retracted": 1, "unverified": 1})
+
+    def test_diff_born_transitions_no_disappeared(self):
+        d = tm.baseline_diff(tm.baseline_snapshot(self._events_a()),
+                             tm.baseline_snapshot(self._events_b()))
+        self.assertEqual(d["claims"]["born"], {"tr-000000a4": "unverified"})
+        self.assertEqual(d["claims"]["transitions"],
+                         {"unverified->live": ["tr-000000a1"]})
+        self.assertEqual(d["claims"]["disappeared"], {})
+        self.assertEqual(d["issues"]["transitions"],
+                         {"open->closed": ["wk-000000b1"]})
+        self.assertEqual(d["records_delta"], 3)
+
+    def test_diff_disappeared_flags_rewritten_history(self):
+        # newer "ref" missing a record the older one has -- impossible in
+        # an append-only descendant, so the diff must surface it
+        d = tm.baseline_diff(tm.baseline_snapshot(self._events_a()),
+                             tm.baseline_snapshot(self._events_a()[:1]))
+        self.assertIn("tr-000000a2", d["claims"]["disappeared"])
+        self.assertIn("wk-000000b1", d["issues"]["disappeared"])
+
+    def test_snapshot_is_deterministic(self):
+        import json as _json
+        one = _json.dumps(tm.baseline_snapshot(self._events_b()),
+                          sort_keys=True)
+        two = _json.dumps(tm.baseline_snapshot(
+            list(reversed(self._events_b()))), sort_keys=True)
+        self.assertEqual(one, two)
+
+class TestInverseReport(unittest.TestCase):
+    """Issue #5 (24765 backward trace): tracked ∖ watched, where watched
+    is the evidence_paths union of every non-retracted claim."""
+    TRACKED = ["src/a.py", "src/deep/b.py", "docs/readme.md",
+               "assets/logo.png", "lone.txt"]
+
+    def _claims(self, *specs):
+        """specs: (status, [paths]) -> fold-shaped claims dict."""
+        return {f"tr-0000000{i}": {"status": status,
+                                   "claim": {"payload":
+                                             {"evidence_paths": paths}}}
+                for i, (status, paths) in enumerate(specs)}
+
+    def test_unwatched_files_are_dark_watched_are_not(self):
+        claims = self._claims(("live", ["src/**"]))
+        rep = tm.inverse_report(self.TRACKED, claims)
+        self.assertEqual(rep["dark"],
+                         ["assets/logo.png", "docs/readme.md", "lone.txt"])
+        self.assertEqual(rep["considered"], 5)
+
+    def test_stale_and_diverged_still_watch(self):
+        """A stale claim is knowledge needing re-check, not absence of
+        knowledge -- its paths are not dark."""
+        claims = self._claims(("stale", ["src/**"]),
+                              ("diverged", ["docs/readme.md"]))
+        rep = tm.inverse_report(self.TRACKED, claims)
+        self.assertEqual(rep["dark"], ["assets/logo.png", "lone.txt"])
+
+    def test_retraction_kills_the_watch(self):
+        claims = self._claims(("retracted", ["src/**"]))
+        rep = tm.inverse_report(self.TRACKED, claims)
+        self.assertEqual(rep["dark"], sorted(self.TRACKED))
+
+    def test_empty_ledger_everything_dark(self):
+        rep = tm.inverse_report(self.TRACKED, {})
+        self.assertEqual(rep["dark"], sorted(self.TRACKED))
+
+    def test_under_scopes_both_dark_and_considered(self):
+        claims = self._claims(("live", ["src/a.py"]))
+        rep = tm.inverse_report(self.TRACKED, claims, under="src")
+        self.assertEqual(rep["dark"], ["src/deep/b.py"])
+        self.assertEqual(rep["considered"], 2)
+        # trailing slash must behave identically
+        self.assertEqual(tm.inverse_report(self.TRACKED, claims,
+                                           under="src/"), rep)
+
+    def test_under_is_a_path_prefix_not_a_string_prefix(self):
+        rep = tm.inverse_report(["srcery/x.py", "src/a.py"], {},
+                                under="src")
+        self.assertEqual(rep["dark"], ["src/a.py"])
+
+    def test_exclude_prefixes_drop_files(self):
+        claims = self._claims(("live", ["src/**"]))
+        rep = tm.inverse_report(self.TRACKED, claims,
+                                excludes=["assets", "lone.txt"])
+        self.assertEqual(rep["dark"], ["docs/readme.md"])
+        self.assertEqual(rep["considered"], 3)
+
+    def test_output_is_sorted_and_deterministic(self):
+        rep = tm.inverse_report(list(reversed(self.TRACKED)), {})
+        self.assertEqual(rep["dark"], sorted(self.TRACKED))
+
 # ------------------------------------------ schema conformance (shared corpus)
 
 # Each fixture: (name, record, expected_valid). This corpus is the single
@@ -906,6 +1252,15 @@ CORPUS = [
     ("premise ok", rec("premise", {"issue": "bd-x1",
                                    "claim": "tr-00000001"}), True),
     ("premise missing issue", rec("premise", {"claim": "tr-00000001"}), False),
+    # ---- premise supersede (ADR-013, v0.6.4) ----
+    ("premise supersedes ok", rec("premise", {"issue": "bd-x1",
+                                              "claim": "tr-00000001",
+                                              "supersedes": "tr-00000002"}),
+     True),
+    ("premise supersedes bad ref", rec("premise", {"issue": "bd-x1",
+                                                   "claim": "tr-00000001",
+                                                   "supersedes": "nonsense"}),
+     False),
     ("unknown kind", rec("wish", {"claim": "tr-00000001"}), False),
     # ---- work kernel (ADR-002, v0.5) ----
     ("issue ok", issue_rec(deps=["wk-00000002"],
@@ -927,6 +1282,7 @@ CORPUS = [
      rec("claim", claim_p(scope_basis="quantifier scoped to services/")), True),
     ("claim empty scope_basis",
      rec("claim", claim_p(scope_basis="")), False),
+    # MEDIUM-1: --duplicate-ok override trace
     ("claim with overridden_duplicates",
      rec("claim", claim_p(overridden_duplicates=["tr-00000001",
                                                  "tr-00000002"])), True),
@@ -952,6 +1308,90 @@ CORPUS = [
                      "basis": "b", "subtype": "cosmic"}), False),
     ("claim negative ttl", rec("claim", claim_p(ttl_days=-1)), False),
     ("empty envelope actor", rec("claim", claim_p()) | {"actor": ""}, False),
+    # ---- acceptance oracles (ADR-014, v0.7) ----
+    ("issue accept ok",
+     issue_rec(accept={"command": "pytest -q", "kind": "verification",
+                       "screened": True}), True),
+    ("issue accept validation kind",
+     issue_rec(accept={"command": "python3 run.py --strict",
+                       "kind": "validation", "screened": False}), True),
+    ("issue accept missing command",
+     issue_rec(accept={"kind": "verification", "screened": True}), False),
+    ("issue accept bad kind",
+     issue_rec(accept={"command": "pytest -q", "kind": "vibes",
+                       "screened": True}), False),
+    ("issue accept screened non-boolean",
+     issue_rec(accept={"command": "pytest -q", "kind": "verification",
+                       "screened": "yes"}), False),
+    ("issue_event accept executed ok",
+     rec("issue_event", {"issue": "wk-00000001", "event": "closed",
+                         "basis": "b",
+                         "accept": {"command": "pytest -q",
+                                    "kind": "verification",
+                                    "executed": True, "returncode": 0}}),
+     True),
+    ("issue_event accept executed nonzero returncode",
+     rec("issue_event", {"issue": "wk-00000001", "event": "closed",
+                         "basis": "b",
+                         "accept": {"command": "pytest -q",
+                                    "kind": "verification",
+                                    "executed": True, "returncode": 1}}),
+     False),
+    ("issue_event accept executed missing returncode",
+     rec("issue_event", {"issue": "wk-00000001", "event": "closed",
+                         "basis": "b",
+                         "accept": {"command": "pytest -q",
+                                    "kind": "verification",
+                                    "executed": True}}), False),
+    ("issue_event accept unexecuted ok",
+     rec("issue_event", {"issue": "wk-00000001", "event": "closed",
+                         "basis": "b",
+                         "accept": {"command": "eval x",
+                                    "kind": "verification",
+                                    "executed": False, "screened": False}}),
+     True),
+    # ---- contradicts edge (issue #4, v0.9) ----
+    ("contradicts ok",
+     rec("contradicts", {"a": "tr-00000001", "b": "tr-00000002",
+                         "basis": "cannot both hold"}), True),
+    ("contradicts missing basis",
+     rec("contradicts", {"a": "tr-00000001", "b": "tr-00000002"}), False),
+    ("contradicts bad ref",
+     rec("contradicts", {"a": "nope", "b": "tr-00000002",
+                         "basis": "x"}), False),
+    # self-edge: schema-VALID (draft-07 cannot compare properties, and
+    # the mirror may not be stricter) -- refused at intake, inert in fold
+    ("contradicts self edge schema-tolerated",
+     rec("contradicts", {"a": "tr-00000001", "b": "tr-00000001",
+                         "basis": "x"}), True),
+    ("contradicts with wk envelope id",
+     rec("contradicts", {"a": "tr-00000001", "b": "tr-00000002",
+                         "basis": "x"}, rid="wk-00000009"), False),
+    ("issue_event accept executed non-boolean",
+     rec("issue_event", {"issue": "wk-00000001", "event": "closed",
+                         "basis": "b",
+                         "accept": {"command": "pytest -q",
+                                    "kind": "verification",
+                                    "executed": "yes"}}), False),
+    # MEDIUM-3: an unexecuted acceptance must not carry a returncode
+    ("issue_event accept unexecuted with returncode",
+     rec("issue_event", {"issue": "wk-00000001", "event": "closed",
+                         "basis": "b",
+                         "accept": {"command": "eval x",
+                                    "kind": "verification",
+                                    "executed": False, "screened": False,
+                                    "returncode": 0}}), False),
+    # ---- canonical ts profile (ADR-015, v0.8.1) -- the fold sorts the
+    # raw ts string, so every non-canonical form must be rejected by
+    # schema pattern and mirror alike ----
+    ("ts with Z suffix",
+     rec("claim", claim_p(), ts="2026-07-01T00:00:00.000000Z"), False),
+    ("ts with non-UTC offset",
+     rec("claim", claim_p(), ts="2026-07-01T05:00:00.000000+05:00"), False),
+    ("ts without microseconds",
+     rec("claim", claim_p(), ts="2026-07-01T00:00:00+00:00"), False),
+    ("ts tz-naive",
+     rec("claim", claim_p(), ts="2026-07-01T00:00:00.000000"), False),
 ]
 
 class TestConformancePython(unittest.TestCase):
