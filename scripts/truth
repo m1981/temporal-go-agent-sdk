@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-"""truth v0.9.3 -- append-only claims ledger with a native work kernel.
+"""truth v0.9.4 -- append-only claims ledger with a native work kernel.
+
+v0.9.4 (independent ledger-code review, H1/H2 -- spec-precision, zero
+  behavior change): two conformance defects where the prose underdetermined
+  the shipped code, so a clean-room second implementer would diverge.
+  ADR-018 (H1, wk-c93f78bd): near-duplicate intake is symmetric Jaccard
+  |A n B|/|A u B| over the SET of maximal [a-z0-9]+ runs of the lowercased
+  text, against the active set {live, unverified} -- NOT the overlap
+  coefficient a bare "token overlap" reading invites (they part ways on a
+  strict token-subset, the elaboration case). ADR-019 (H2, wk-192107ef):
+  TTL expiry counts from the claim's own ts with a STRICT boundary
+  (now - ts > ttl_days), and the fold reads no clock -- expiry is
+  materialized by invalidate-scan as an invalidation record, keeping the
+  fold a pure confluent function of the log. Both ratify v0.4/v0.2
+  behavior as normative and lock it: core tests + canary FAULT I
+  metric-identity arm and FAULT D fold-clock-free arm.
 
 v0.9.3 (ADR-017, wk-eaa42782): supersede authority. Source: independent
   review finding C3 (Critical), confirmed live -- retraction terminality
@@ -723,8 +738,13 @@ def native_ready_issues(issues):
 # ------------------------------------------------- intake decisions (G1/6/8)
 
 def duplicate_conflicts(text, claims):
-    """G8: near-duplicates among ACTIVE claims only; corrections of
-    stale/diverged/retracted/cannot_verify claims are legitimate (UC-4)."""
+    """G8 / ADR-018: near-duplicates among ACTIVE claims only. "Active" is
+    exactly {live, unverified} (positive form -- stays correct as the
+    status vocabulary grows); every other status (stale, diverged,
+    cannot_verify, retracted, disputed) is dead-for-intake, so a
+    correcting refile against it is legitimate (UC-4). Metric is jaccard()
+    -- symmetric |A n B|/|A u B|, NOT the overlap coefficient -- so a
+    strict elaboration (subset) is not a duplicate. Threshold >= 0.6."""
     return [(cid, e["claim"]["payload"].get("text", ""))
             for cid, e in claims.items()
             if e["status"] in ("live", "unverified")
@@ -1113,6 +1133,12 @@ NO_EVIDENCE_VERDICT = ("cannot_verify",
 # reachability, then path diffs (matches v0.2 semantics).
 
 def _ttl_expired(entry, facts, now):
+    """ADR-019: TTL counts from the claim's own ts (not the anchor, not
+    the agree verdict) and the boundary is STRICT -- expired only when
+    (now - ts) > ttl_days, so at exactly ts + ttl_days it survives. Runs
+    inside the scan (an INVALIDATOR), which is the only clock reader; it
+    emits an invalidation record, and the fold demotes to stale off that
+    record. The fold never evaluates TTL itself -- purity/confluence."""
     p = entry["claim"]["payload"]
     ttl = p.get("ttl_days")
     claim_ts = parse_ts(entry["claim"].get("ts") or "")

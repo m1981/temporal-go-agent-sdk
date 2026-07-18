@@ -147,6 +147,18 @@ if $T list --stale --json | grep -q "$CID_D"; then
 else
   miss "ttl_days is still a dead field: $CID_D outlived its ttl"
 fi
+# ADR-019 (H2): the fold reads no clock -- a TTL'd claim is NOT stale
+# until a scan writes the invalidation record. File one already long past
+# its ttl and do NOT scan: it must stay non-stale. An implementer whose
+# fold expired from wall-time would wrongly show it stale here.
+CID_DF=$(TRUTH_NOW="2026-01-01T00:00:00+00:00" $T claim \
+         "external rate limit was 50 req per min" --class INFERRED \
+         --basis "vendor docs read 2026-01-01" --ttl-days 7 --tier P2)
+if $T list --stale --json | grep -q "$CID_DF"; then
+  miss "fold synthesized TTL expiry with no scan record (clock leaked into the fold)"
+else
+  ok "TTL'd claim stays non-stale until a scan emits the record (fold clock-free, ADR-019)"
+fi
 
 say "FAULT G (G6): nondeterministic evidence command must be refused"
 if $T claim "the clock ticks" --class VERIFIED \
@@ -325,6 +337,18 @@ sys.exit(1)" 2>/dev/null; then
   ok "the --duplicate-ok record carries overridden_duplicates (MEDIUM-1 trace)"
 else
   miss "the --duplicate-ok override left no overridden_duplicates trace"
+fi
+# ADR-018 (H1): the metric is Jaccard, NOT the overlap coefficient. A
+# strict token-superset of an active claim (an elaboration) is Jaccard
+# 0.5/0.375 against the two active payments claims -- below 0.6, so it
+# must be ACCEPTED with no --duplicate-ok. An overlap-coefficient
+# implementer would compute 1.0 and refuse it: this arm fails if the
+# metric ever drifts to overlap-coefficient/Dice.
+if $T claim "the payments module handles all currency conversion logic and also validates refund tax rounding audit trails" \
+     --tier P2 >/dev/null 2>&1; then
+  ok "a token-superset elaboration is accepted (metric is Jaccard, ADR-018)"
+else
+  miss "intake refused a Jaccard<0.6 elaboration -- metric drifted off Jaccard"
 fi
 
 say "FAULT J (ADR-001): issue premised on a stale claim must be HELD"

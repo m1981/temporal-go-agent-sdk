@@ -43,7 +43,14 @@ union-merged branches derive identical status (confluence). The fold
 sorts the raw `ts` string, so `ts` must be the canonical profile
 `YYYY-MM-DDTHH:MM:SS.ssssss+00:00` — fixed-width UTC microseconds,
 exactly what the CLI mints; any other offset, `Z` suffix, or precision
-fails `validate` (ADR-015: string order must equal time order). Duplicate
+fails `validate` (ADR-015: string order must equal time order). The fold
+reads **no clock**: even TTL expiry is not folded from wall-time — the
+`invalidate-scan` (the sole clock reader) counts elapsed time from the
+claim's own `ts` and, when *strictly more than* `ttl_days` have passed
+(`now - ts > ttl_days`; the exact boundary has not yet expired), appends
+an **invalidation record**; only that record demotes the claim to
+`stale`. A TTL'd claim the scan has not visited is not stale, however old
+(ADR-019 — this is what keeps the fold pure and confluent). Duplicate
 claim and issue ids are first-wins (F6, ADR-006): a later append bearing
 an existing id is inert. `retracted` (claims) and `cancelled` (issues)
 are terminal and human-gated (ADR-011; the full requirement is stated
@@ -52,7 +59,13 @@ under v0.6 solo-regime hardening below); `closed` is not terminal
 its effective anchor, so re-verified claims stay live across scans.
 
 Intake gates, in refusal order: empty claim text (v0.5.5); near-duplicate
-of an active claim (≥0.6 token overlap; `--duplicate-ok` overrides);
+of an active claim (Jaccard token overlap ≥ 0.6; `--duplicate-ok`
+overrides) — ADR-018 pins the conformance surface: metric is Jaccard
+`|A∩B|/|A∪B|` (not the overlap coefficient), tokens are the *set* of
+maximal `[a-z0-9]+` runs of the lowercased text, and "active" is exactly
+the `{live, unverified}` statuses (the other five — `stale`, `diverged`,
+`cannot_verify`, `retracted`, `disputed` — are dead-for-intake, so a
+correcting refile against them is always allowed);
 quantifier–scope mismatch (ADR-007, v0.6) — a universally quantified
 claim text ("only", "no … anywhere", "the repo") over a scoped evidence
 command (`--include`, path arguments, `cd`) is refused unless
