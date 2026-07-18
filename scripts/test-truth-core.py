@@ -153,14 +153,43 @@ class TestPrimitives(unittest.TestCase):
         self.assertEqual(tm.jaccard("", "a"), 0.0)
 
     def test_duplicate_conflicts_only_active(self):
-        claims = {
-            "tr-0000000a": {"status": "live",
-                            "claim": rec("claim", claim_p(text="payments module handles currency conversion"))},
-            "tr-0000000b": {"status": "stale",
-                            "claim": rec("claim", claim_p(text="payments module handles currency conversion"))},
-        }
+        # ADR-018: "active" is exactly {live, unverified}; every other
+        # status is dead-for-intake and a correcting refile is allowed.
+        base = "payments module handles currency conversion"
+        claims = {"tr-0000000a": {"status": "live",
+                                  "claim": rec("claim", claim_p(text=base))}}
+        for i, dead in enumerate(("stale", "diverged", "cannot_verify",
+                                  "retracted", "disputed")):
+            claims[f"tr-0000010{i}"] = {"status": dead,
+                                        "claim": rec("claim", claim_p(text=base))}
         hits = tm.duplicate_conflicts("payments module handles all currency conversion", claims)
-        self.assertEqual([cid for cid, _ in hits], ["tr-0000000a"])  # stale exempt
+        self.assertEqual([cid for cid, _ in hits], ["tr-0000000a"])  # only the live one
+
+    def test_near_dup_metric_is_jaccard_not_overlap(self):
+        """ADR-018 (H1): the near-dup metric is symmetric Jaccard, not the
+        overlap coefficient a vague "overlap >= 0.6" reading invites. The
+        two diverge on a strict token-subset (an elaboration of an
+        existing claim): Jaccard accepts it, overlap-coefficient refuses
+        it. Pin the reference to Jaccard so two implementers cannot
+        diverge across the 0.6 boundary."""
+        a = "auth module owns login"
+        b = "auth module owns login and also owns logout and session refresh handling"
+        ta, tb = tm.tokens(a), tm.tokens(b)
+        self.assertTrue(ta <= tb)  # a's tokens are a strict subset of b's
+        inter = len(ta & tb)
+        # Reference metric: Jaccard = 4/10 = 0.4 -> below 0.6 -> NOT a duplicate.
+        self.assertAlmostEqual(tm.jaccard(a, b), 0.4)
+        self.assertLess(tm.jaccard(a, b), tm.DUPLICATE_THRESHOLD)
+        # The overlap coefficient on the same tokens is 1.0 -> a conforming
+        # implementer who read "overlap" literally would REFUSE. Proof the
+        # spec ambiguity was real and is now resolved away from it.
+        overlap_coeff = inter / min(len(ta), len(tb))
+        self.assertEqual(overlap_coeff, 1.0)
+        self.assertGreaterEqual(overlap_coeff, tm.DUPLICATE_THRESHOLD)
+        # At the gate: b is accepted against an active a (no conflict row).
+        claims = {"tr-0000000a": {"status": "live",
+                                  "claim": rec("claim", claim_p(text=a))}}
+        self.assertEqual(tm.duplicate_conflicts(b, claims), [])
 
 # ---------------------------------------------------- intake decisions
 
@@ -593,6 +622,35 @@ class TestInvalidation(unittest.TestCase):
     def test_ttl_not_yet(self):
         e = entry(claim_p(ttl_days=30))
         self.assertIsNone(tm.decide_invalidation(e, {"head": "h"}, NOW))
+
+    def test_ttl_boundary_is_strict_from_claim_ts(self):
+        """ADR-019 (H2): expiry counts from the claim's own ts with a
+        STRICT boundary -- at exactly ts + ttl_days it survives; one unit
+        past, it expires. And the reference instant is per-claim ts, not a
+        fixed epoch, so a later-dated claim with the same ttl is not yet
+        expired at the same `now`."""
+        claim_dt = tm.parse_ts(TS)                       # 2026-07-01T00:00:00Z
+        exact = claim_dt + timedelta(days=4)             # ts + ttl_days
+        just_after = exact + timedelta(seconds=1)
+        e = entry(claim_p(ttl_days=4), ts=TS)
+        self.assertIsNone(                               # strict >: boundary survives
+            tm.decide_invalidation(e, {"head": "h"}, exact))
+        d = tm.decide_invalidation(e, {"head": "h"}, just_after)
+        self.assertEqual(d["label"], "ttl expired")      # one second past: expired
+        later = entry(claim_p(ttl_days=4),
+                      ts="2026-07-02T00:00:00.000000+00:00")
+        self.assertIsNone(                               # counted from ITS ts, not a global clock
+            tm.decide_invalidation(later, {"head": "h"}, just_after))
+
+    def test_fold_never_synthesizes_ttl_expiry(self):
+        """ADR-019 (H2): the fold reads no clock. A TTL'd claim with no
+        invalidation record folds non-stale however old -- only the scan
+        (the sole clock reader) emits the record that demotes it. Guards
+        against a future edit that makes the fold expire from wall-time
+        (which would destroy purity/confluence, INV-I)."""
+        old = "2020-01-01T00:00:00.000000+00:00"         # 6+ years before NOW
+        claims, _ = tm.fold(events(rec("claim", claim_p(ttl_days=1), ts=old)))
+        self.assertEqual(claims["tr-00000001"]["status"], "unverified")
 
     def test_anchor_unreachable(self):
         e = entry(verified_p())
