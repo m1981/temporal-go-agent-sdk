@@ -314,6 +314,17 @@ if DUP=$($T claim "the payments module handles currency conversion" \
 else
   miss "--duplicate-ok override rejected a legitimate refile"
 fi
+# MEDIUM-1: the override must leave an auditable trace, not vanish silently
+if python3 -c "import json,sys
+for line in open('.truth/claims.jsonl'):
+    r=json.loads(line)
+    if r.get('id')=='$DUP':
+        sys.exit(0 if r['payload'].get('overridden_duplicates') else 1)
+sys.exit(1)" 2>/dev/null; then
+  ok "the --duplicate-ok record carries overridden_duplicates (MEDIUM-1 trace)"
+else
+  miss "the --duplicate-ok override left no overridden_duplicates trace"
+fi
 
 say "FAULT J (ADR-001): issue premised on a stale claim must be HELD"
 cat > bd <<'EOF'
