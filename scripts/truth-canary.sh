@@ -20,6 +20,7 @@ mkrepo() {
   touch .truth/claims.jsonl
   cp "$HERE/truth" scripts/truth
   cp "$HERE/../.truth/evidence-allow" .truth/evidence-allow
+  cp "$HERE/../.truth/evidence-deny" .truth/evidence-deny  # ADR-022 baseline
   cp "$HERE/check-truth.sh" scripts/check-truth.sh
   cp "$HERE/spec-health.sh" scripts/spec-health.sh
   cp "$HERE/doc-health.sh" scripts/doc-health.sh
@@ -281,6 +282,17 @@ if $T claim "widget cache newline probe" --class VERIFIED \
 else
   ok "screen refused the newline-smuggled command (ADR-021 tokenizer parity)"
 fi
+
+say "FAULT ED (ADR-022): an accidentally-allowlisted shell must still be refused (deny-wins)"
+echo "bash" >> .truth/evidence-allow  # consumer allowlists a shell by accident
+if $T claim "the widget tests pass" --class VERIFIED \
+     --evidence-cmd "bash -c 'grep -q x watched.txt'" --paths "watched.txt" \
+     --tier P2 --duplicate-ok >/dev/null 2>&1; then
+  miss "screen accepted an allowlisted shell -- ADR-022 deny baseline not applied"
+else
+  ok "allowlisted shell refused by the template-owned deny baseline (ADR-022 deny-wins)"
+fi
+grep -v '^bash$' .truth/evidence-allow > .truth/evidence-allow.tmp && mv .truth/evidence-allow.tmp .truth/evidence-allow
 
 say "FAULT T (INV-M): a dead evidence-path tripwire must be refused at intake"
 if $T claim "a and watched are fine" --class VERIFIED \

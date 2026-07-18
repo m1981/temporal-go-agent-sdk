@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
-"""truth v0.9.6 -- append-only claims ledger with a native work kernel.
+"""truth v0.9.7 -- append-only claims ledger with a native work kernel.
+
+v0.9.7 (evidence-deny baseline, wk-372de09c): ADR-022 adds an anti-footgun
+  guardrail beneath the allowlist (which stays the boundary, ADR-021). A
+  TEMPLATE-owned `.truth/evidence-deny` file lists programs whose sole job
+  is to run other programs (shells + generic executors/exec-wrappers +
+  privilege-then-run); the evidence screen refuses them in program
+  position even if a consumer allowlisted one by accident (deny-wins),
+  evidence screen only -- ADR-014 oracles still run `bash run.sh`. It is
+  template-owned (NOT copier `_skip_if_exists`, unlike the consumer-owned
+  allowlist), so `copier update` keeps the baseline current; absent it
+  fails open, the allowlist still gating. `doctor` additionally warns
+  (non-blocking) on grey-zone code-executors (git/python/curl/...) in the
+  allowlist. An adversarial review found and closed one RCE gap (`time
+  bash -c <cmd>`; time added to the baseline). NOT a completeness claim --
+  the allowlist is the boundary. Core test_denylist_wins_over_allowlist /
+  _deny_baseline_not_applied_to_oracles / _doctor_grey_zone_set; canary
+  FAULT ED.
+
 
 v0.9.6 (independent ledger-code review, H4 -- SECURITY): ADR-021
   (wk-5b2b724e) closes a live evidence-screen bypass. The screen tokenizes
@@ -478,6 +496,27 @@ PROGRAM_ARG_DENY = {
 # anything beyond this is a clock regression worth a warning.
 SKEW_TOLERANCE_SECONDS = 300
 EVIDENCE_ALLOW_REL = ".truth/evidence-allow"
+# ADR-022: a TEMPLATE-OWNED baseline deny for the EVIDENCE screen only.
+# The allowlist is the security boundary (ADR-021); this is an anti-footgun
+# guardrail so a consumer who accidentally allowlists a shell or generic
+# executor -- which would turn the read-only screen into arbitrary
+# execution -- is still refused (deny-wins over the allowlist). It lists
+# only programs whose SOLE job is to run OTHER programs (never a read-only
+# check), so it makes NO completeness claim (that trap is ADR-021's
+# lesson) and has zero false-positive cost. It does NOT apply to the
+# ACCEPTANCE screen (ADR-014 oracles execute code on purpose, e.g. `bash
+# canary.sh`). Grey-zone interpreters/VCS with plausible read-only uses
+# (git, python, awk, sed, curl, ...) are NOT hard-denied -- doctor warns
+# about them instead (below), leaving the policy to the consumer.
+EVIDENCE_DENY_REL = ".truth/evidence-deny"
+# ADR-022: doctor advisory set -- programs that CAN execute code or write
+# files but have plausible read-only uses, so they are surfaced (WARN),
+# not blocked. Blocking these would fight legitimate workflows; ignoring
+# them let H4's git-in-the-allowlist slip in unnoticed.
+DOCTOR_GREY_ZONE = frozenset((
+    "git", "python", "python3", "python2", "perl", "ruby", "node", "make",
+    "pytest", "tox", "awk", "gawk", "sed", "curl", "wget", "ssh", "scp",
+    "rsync", "docker", "npm", "npx", "pip", "pip3", "cargo", "go"))
 # ADR-014: acceptance oracles execute repository code at `done` time --
 # their own allowlist, never the read-only evidence one.
 ACCEPT_ALLOW_REL = ".truth/accept-allow"
@@ -880,7 +919,7 @@ _SCREEN_PUNCT = frozenset("();<>|&")
 
 def screen_evidence_command(cmd, allowlist, allow_rel=EVIDENCE_ALLOW_REL,
                             missing_tail=None, unlisted_hint=None,
-                            allow_paths=False):
+                            allow_paths=False, denylist=None):
     """ADR-009: evidence commands re-execute later in a *verifier's*
     session (recheck) -- deferred code execution across the trust seam
     G11 protects. Static screen over a QUOTE-AWARE token stream (shlex
@@ -954,6 +993,16 @@ def screen_evidence_command(cmd, allowlist, allow_rel=EVIDENCE_ALLOW_REL,
                 return f"unscreenable shell construct {tok!r} (ADR-009)"
             continue
         if expecting_program:
+            if denylist and tok in denylist:
+                # ADR-022: deny-wins over the allowlist. Shells/executors
+                # are never read-only evidence; refuse even if a consumer
+                # allowlisted one by accident (the H4 footgun).
+                return (f"'{tok}' is on the template-owned evidence deny "
+                        f"baseline ({EVIDENCE_DENY_REL}) -- shells and "
+                        "generic executors turn the read-only screen into "
+                        "arbitrary execution and are never valid evidence, "
+                        "even if allowlisted (ADR-022). To run repository "
+                        "code on purpose, use an acceptance oracle (ADR-014).")
             if "/" in tok:
                 # Issue #7 (v0.7.2, accept screen only): an ALLOWLISTED
                 # exact repo-relative path may run as an oracle -- the
@@ -1672,6 +1721,12 @@ def load_allowlist(rel=EVIDENCE_ALLOW_REL):
                 out.append(line)
     return out
 
+def load_denylist():
+    """ADR-022: the template-owned evidence deny baseline, or None if the
+    file is absent (an older deployment simply has no extra deny -- the
+    allowlist stays the boundary, so this layer fails open harmlessly)."""
+    return load_allowlist(EVIDENCE_DENY_REL)
+
 def human_ack_error(target_id, what):
     """ADR-011: tombstones require TRUTH_HUMAN=1 plus either an
     interactive typed-id confirmation or an id-specific TRUTH_HUMAN_ACK
@@ -1842,7 +1897,8 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
         # A missing allowlist fails closed even under --evidence-unsafe-ok
         # (the override targets a specific command, not absent machinery).
         allow = load_allowlist()
-        screen_err = screen_evidence_command(evidence_cmd, allow)
+        screen_err = screen_evidence_command(evidence_cmd, allow,
+                                             denylist=load_denylist())
         if screen_err and (allow is None or not unsafe_ok):
             sys.exit("truth: " + screen_err)
         digest, rc = run_evidence(evidence_cmd)
@@ -1906,7 +1962,8 @@ def cmd_verdict(a):
                               "(evidence.screened=false)")
             else:
                 screen_err = screen_evidence_command(ev["command"],
-                                                     load_allowlist())
+                                                     load_allowlist(),
+                                                     denylist=load_denylist())
             if screen_err:
                 sys.exit(f"truth: {a.claim_id}: recheck will not execute "
                          f"this evidence command -- {screen_err}. If you "
@@ -2532,13 +2589,28 @@ def cmd_doctor(a):
     else:
         fail("ledger exists", f"{LEDGER_REL} missing -- touch it")
 
-    if load_allowlist() is not None:
+    allow = load_allowlist()
+    if allow is not None:
         ok("evidence allowlist present")
     else:
         fail("evidence allowlist present",
              f"{EVIDENCE_ALLOW_REL} missing -- VERIFIED intake and recheck "
              "fail closed without it (ADR-009); the template ships a "
              "read-only default")
+
+    # ADR-022: hard-deny baseline catches shells/executors; doctor
+    # additionally advises (non-blocking) on grey-zone programs that can
+    # execute code or write files but have plausible read-only uses -- the
+    # policy stays the consumer's, but an accidental `git`/`python`/`curl`
+    # in the allowlist (the H4 class) is surfaced, not silently trusted.
+    grey = sorted(set(allow or []) & DOCTOR_GREY_ZONE)
+    if grey:
+        warn("evidence allowlist grey-zone",
+             f"{', '.join(grey)} in {EVIDENCE_ALLOW_REL} can execute code or "
+             "write files; confirm each is intended and used read-only, or "
+             "move deliberate execution to an acceptance oracle (ADR-014/022)")
+    else:
+        ok("evidence allowlist grey-zone", "no code-executing programs listed")
 
     ga = os.path.join(root, ".gitattributes")
     if os.path.exists(ga) and "claims.jsonl merge=union" in open(ga, encoding="utf-8").read():

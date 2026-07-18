@@ -98,7 +98,15 @@ are refused by a per-program deny table — `find -exec/-execdir/-ok/-okdir/-del
 `sort -o/--output/--compress-program`, and a few top-level `git` flags —
 but that table is a BLOCKLIST and cannot bound an interpreter or VCS, so
 `git`, `sed`, `awk`, and test runners are absent from the shipped
-allowlist by design and must not be added for evidence use (ADR-021);
+allowlist by design and must not be added for evidence use (ADR-021).
+Two guardrails catch an accidental one anyway (ADR-022): a TEMPLATE-owned
+`.truth/evidence-deny` baseline hard-refuses shells and generic executors
+(`sh`, `bash`, `env`, `xargs`, …) even if you allowlist one — deny-wins,
+evidence screen only (an acceptance oracle may still run `bash`) — and
+`truth doctor` WARNS (non-blocking) when your allowlist holds a grey-zone
+program (`git`, `python`, `curl`, …) that can execute code. You own
+`.truth/evidence-allow`; the template owns `.truth/evidence-deny` and a
+`copier update` keeps it current;
 `--evidence-unsafe-ok` files a *screen failure* anyway with
 `evidence.screened=false`, and recheck then refuses to execute the
 command, ever — verification becomes manual; but a **missing** allowlist

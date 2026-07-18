@@ -481,6 +481,46 @@ class TestEvidenceScreen(unittest.TestCase):
                              tm.PROGRAM_ARG_DENY["sort"])
         self.assertIn("-o", tm.PROGRAM_ARG_DENY["git"])
 
+    def test_denylist_wins_over_allowlist(self):
+        """ADR-022: a shell/executor on the template-owned deny baseline is
+        refused even when the consumer allowlisted it (deny-wins), because
+        allowlisting a shell turns the read-only screen into arbitrary
+        execution. A non-denied program is unaffected."""
+        deny = ["bash", "sh", "env", "xargs", "time"]
+        err = tm.screen_evidence_command("bash -c 'echo hi'", ["bash", "grep"],
+                                         denylist=deny)
+        self.assertIsNotNone(err)
+        self.assertIn("evidence-deny", err)
+        # env as a program (a generic executor) is refused even if allowed
+        self.assertIsNotNone(tm.screen_evidence_command(
+            "env grep x f.txt", ["env", "grep"], denylist=deny))
+        # `time <cmd>` runs <cmd> as an argument the screen never program-
+        # checks -- adversary-confirmed RCE if allowlisted; deny closes it
+        self.assertIsNotNone(tm.screen_evidence_command(
+            "time bash -c 'touch x'", ["time", "bash"], denylist=deny))
+        # a normal allowlisted program is untouched by the deny layer
+        self.assertIsNone(tm.screen_evidence_command(
+            "grep x f.txt", ["grep"], denylist=deny))
+        # an absent deny file (denylist=None) fails open: allowlist governs
+        self.assertIsNone(tm.screen_evidence_command(
+            "grep x f.txt", ["grep"], denylist=None))
+
+    def test_deny_baseline_not_applied_to_oracles(self):
+        """ADR-022: the deny baseline is evidence-only. Acceptance oracles
+        (ADR-014) execute repository code on purpose -- `bash run.sh` is
+        their normal shape -- so screen_accept_command passes no denylist."""
+        self.assertIsNone(tm.screen_accept_command("bash run-tests.sh",
+                                                   ["bash"]))
+
+    def test_doctor_grey_zone_set(self):
+        """ADR-022: the doctor advisory set names code-executing programs
+        with plausible read-only uses (warned, not blocked). Read-only
+        staples are NOT in it (they would warn spuriously)."""
+        self.assertLessEqual({"git", "python", "curl", "pytest", "sed"},
+                             tm.DOCTOR_GREY_ZONE)
+        self.assertTrue(tm.DOCTOR_GREY_ZONE.isdisjoint(
+            {"grep", "cat", "wc", "find", "sort", "test"}))
+
 class TestAcceptScreen(unittest.TestCase):
     """ADR-014: same structural screen, its own allowlist -- the refusal
     messages must name .truth/accept-allow and the accept escape hatch,

@@ -1,0 +1,73 @@
+# Evidence-command DENY baseline (ADR-022). One bare program name per line.
+#
+# TEMPLATE-OWNED, not consumer policy: unlike .truth/evidence-allow (which
+# you own and copier never clobbers), this file is maintained by the
+# truth-ledger template and a `copier update` keeps it current. Do not
+# edit it -- your changes will be overwritten. You control what RUNS via
+# the allowlist; this file only removes footguns from that choice.
+#
+# What this is: an anti-footgun guardrail. The allowlist is the security
+# boundary (ADR-021) -- only bare allowlisted names run, and this is NOT a
+# claim to enumerate every dangerous program (that blocklist trap is
+# ADR-021's lesson). It lists ONLY programs whose sole job is to run OTHER
+# programs -- shells and generic executors -- which are never a read-only
+# evidence check. If one of these is on your allowlist by accident, the
+# evidence screen refuses it anyway (deny-wins), because allowlisting a
+# shell silently turns the read-only screen into arbitrary execution.
+#
+# What this is NOT: it does not touch the ACCEPTANCE screen (ADR-014
+# oracles execute repository code on purpose -- `bash run-tests.sh` is
+# legitimate there). And it does not hard-deny grey-zone interpreters/VCS
+# with plausible read-only uses (git, python, awk, sed, curl, ...); for
+# those `truth doctor` warns instead, leaving the policy to you.
+#
+# To run repository code on purpose, use an acceptance oracle (ADR-014),
+# not an evidence command.
+
+# shells -- run arbitrary commands from a string or script
+sh
+bash
+zsh
+dash
+ksh
+csh
+tcsh
+fish
+ash
+busybox
+
+# generic executors -- their sole purpose is to launch another program,
+# which then runs as an ARGUMENT the screen does not program-check. This
+# list covers the well-known ones; it is NOT a completeness claim (that
+# trap is ADR-021's lesson) -- the allowlist stays the boundary. `time` is
+# the classic footgun: innocent-looking ("time my grep") but `time <cmd>`
+# runs <cmd>, and it is both a /usr/bin/time binary and a shell keyword.
+env
+xargs
+nice
+nohup
+timeout
+setsid
+stdbuf
+watch
+command
+time
+flock
+ionice
+taskset
+unshare
+nsenter
+chroot
+runuser
+prlimit
+chrt
+eatmydata
+script
+expect
+socat
+parallel
+
+# privilege escalation that runs a command
+sudo
+doas
+su
