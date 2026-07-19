@@ -744,6 +744,32 @@ class TestOrderCheck(unittest.TestCase):
         errors, _ = tm.order_check(evs)
         self.assertEqual(len(errors), 1)
 
+    def test_issue_event_before_its_issue_is_an_error(self):
+        """ADR-028: an issue_event sorting BEFORE its issue record is a
+        forward reference fold_issues silently drops -- the future-dated-
+        issue hole. A raw honest-clock event on a 2027-dated issue record
+        sorts first and must be refused at the commit gate."""
+        evs = events(
+            rec("issue", {"title": "future"}, rid="wk-0000f00d",
+                ts="2027-06-01T00:00:00+00:00"),
+            rec("issue_event", {"issue": "wk-0000f00d", "event": "closed",
+                                "basis": "raw"}, rid="tr-11110001",
+                ts="2026-07-19T00:00:00+00:00"))
+        errors, _ = tm.order_check(evs)
+        self.assertTrue(any("sorts before its issue record" in e
+                            for e in errors), errors)
+
+    def test_issue_event_after_its_issue_passes(self):
+        """No false positive: the normal order (issue then event) is fine."""
+        evs = events(
+            rec("issue", {"title": "ok"}, rid="wk-0000aaaa",
+                ts="2026-07-01T00:00:00+00:00"),
+            rec("issue_event", {"issue": "wk-0000aaaa", "event": "claimed",
+                                "basis": ""}, rid="tr-11110002",
+                ts="2026-07-02T00:00:00+00:00"))
+        errors, _ = tm.order_check(evs)
+        self.assertEqual(errors, [])
+
 # --------------------------------------------------------- stats (FS-1)
 
 class TestStats(unittest.TestCase):
@@ -1132,6 +1158,15 @@ class TestIssueEventError(unittest.TestCase):
             self.assertIsNone(tm.issue_event_error(st, ev), f"{st}->{ev}")
         for st, ev in bad:
             self.assertIsNotNone(tm.issue_event_error(st, ev), f"{st}->{ev}")
+
+    def test_future_dated_issue_refused_at_intake(self):
+        """ADR-028: acting on an issue whose record is dated beyond skew in
+        the future is refused -- an event filed now would sort before it and
+        the fold would drop it. NOW is the core's fixed clock (12:00)."""
+        future = {"id": "wk-00000001", "ts": "2027-06-01T00:00:00.000000+00:00"}
+        self.assertIsNotNone(tm.issue_event_ts_error(future, NOW))
+        present = {"id": "wk-00000002", "ts": "2026-07-05T11:59:00.000000+00:00"}
+        self.assertIsNone(tm.issue_event_ts_error(present, NOW))
 
 class TestNativeReady(unittest.TestCase):
     def _issues(self, *evs):
@@ -1554,6 +1589,31 @@ CORPUS = [
                                              "reason": "ttl expired"}), True),
     ("invalidation missing commit",
      rec("invalidation", {"claim": "tr-00000001"}), False),
+    # ADR-027: anchor_commit/commit carry a git SHA prefix (>=7 everywhere
+    # the system emits one). The fs2 mutant generator is BLIND to this floor
+    # (it emits no null, and its junk literal is 7 chars), so these explicit
+    # fixtures carry the constraint across both contract surfaces.
+    ("verified claim sub-7 anchor",
+     rec("claim", verified_p(anchor_commit="abc123")), False),
+    ("verified claim null anchor",
+     rec("claim", verified_p(anchor_commit=None)), False),
+    ("unverified claim sub-7 anchor",
+     rec("claim", claim_p(anchor_commit="abc")), False),
+    ("unverified claim null anchor ok",
+     rec("claim", claim_p(anchor_commit=None)), True),
+    ("unverified claim 7-char anchor ok",
+     rec("claim", claim_p(anchor_commit="abc1234")), True),
+    ("verdict sub-7 anchor",
+     rec("verdict", {"claim": "tr-00000001", "verdict": "agree",
+                     "basis": "b", "anchor_commit": "abc"}), False),
+    ("verdict null anchor",
+     rec("verdict", {"claim": "tr-00000001", "verdict": "agree",
+                     "basis": "b", "anchor_commit": None}), False),
+    ("verdict 7-char anchor ok",
+     rec("verdict", {"claim": "tr-00000001", "verdict": "agree",
+                     "basis": "b", "anchor_commit": "abc1234"}), True),
+    ("invalidation sub-7 commit",
+     rec("invalidation", {"claim": "tr-00000001", "commit": "abc"}), False),
     ("premise ok", rec("premise", {"issue": "bd-x1",
                                    "claim": "tr-00000001"}), True),
     ("premise missing issue", rec("premise", {"claim": "tr-00000001"}), False),
@@ -1828,6 +1888,86 @@ class TestGeneratedMutantsAgree(unittest.TestCase):
         # F1's own fix)
         self.assertGreater(total, 200,
                            f"mutant generator produced only {total} cases")
+
+# ---------------------- cross-surface version consistency (M1)
+#
+# Four surfaces carry a version stamp -- the CLI (scripts/truth line 2),
+# the README title, the schema $id, the paper. M1 found them drifting by
+# ~two minor versions because release discipline bumped bodies but not
+# stamps, and NOTHING mechanical caught it. These tests make the two
+# stamps that are a hard invariant decidable in the battery: the README
+# title MUST equal the CLI version (git history shows they moved in
+# lockstep every release until the v0.9.x spec-precision batch let the
+# README lag), and the schema $id MUST carry the shape fingerprint below
+# so a record-shape change (a new `kind`) cannot ship without a conscious
+# $id bump (ADR-026). The paper deliberately reference-not-restates its
+# version (it points at scripts/truth) and so has no stamp to pin.
+
+_VER_RE = __import__("re").compile(r"v(\d+\.\d+\.\d+)")
+
+def _cli_version():
+    with open(os.path.join(HERE, "truth")) as f:
+        f.readline()                       # shebang
+        m = _VER_RE.search(f.readline())   # `"""truth vX.Y.Z -- ...`
+    return m.group(1) if m else None
+
+def _readme_version():
+    path = os.path.join(HERE, "..", ".truth", "README.md")
+    with open(path) as f:
+        m = _VER_RE.search(f.readline())   # `# .truth ... (vX.Y.Z)`
+    return m.group(1) if m else None
+
+class TestCrossSurfaceVersions(unittest.TestCase):
+    """M1: the version stamps that are a hard invariant agree, mechanically."""
+
+    def test_readme_title_equals_cli_version(self):
+        cli, readme = _cli_version(), _readme_version()
+        self.assertIsNotNone(cli, "could not read CLI version (truth line 2)")
+        self.assertIsNotNone(readme, "could not read README title version")
+        self.assertEqual(
+            readme, cli,
+            f"cross-surface drift (M1): README title v{readme} != CLI "
+            f"v{cli}. They moved in lockstep every release until v0.9.x; a "
+            f"release MUST bump both. Update the README title (ADR-026).")
+
+    # ADR-026: the schema $id is a SCHEMA-CONTRACT version (two-component,
+    # independent of the product version), bumped only when the record
+    # SHAPE changes. It lapsed three times (v0.8.1 ts pattern, v0.9.0
+    # contradicts kind, v0.9.1/2 field additions) because nothing tied the
+    # $id to the shape and no test could see it. This pins the shape: any
+    # edit to the schema (minus its own $id) breaks the fingerprint, forcing
+    # a conscious "is this a shape change? then bump $id" review.
+    EXPECTED_SCHEMA_ID = "truth-ledger-record.v0.9"
+    PINNED_SHAPE_SHA256 = \
+        "847c25d85d31aaed7f5b92358cb310ee9eec7aa83c5111d3703d9f11e9af47d9"
+
+    def _schema(self):
+        import json as _json
+        path = os.path.join(HERE, "..", ".truth", "schema", "claims.schema.json")
+        with open(path) as f:
+            return _json.load(f)
+
+    def test_schema_id_is_pinned(self):
+        self.assertEqual(
+            self._schema().get("$id"), self.EXPECTED_SCHEMA_ID,
+            "schema $id changed unexpectedly. The $id is the schema-contract "
+            "version (ADR-026): bump it ONLY on a record-shape change, then "
+            "update EXPECTED_SCHEMA_ID here.")
+
+    def test_schema_shape_fingerprint(self):
+        import json as _json, hashlib, copy
+        shape = copy.deepcopy(self._schema())
+        shape.pop("$id", None)
+        fp = hashlib.sha256(_json.dumps(
+            shape, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual(
+            fp, self.PINNED_SHAPE_SHA256,
+            "the record SHAPE changed (schema minus $id). If this is a "
+            "contract shape change (new kind / field / constraint), BUMP the "
+            "$id to the next minor and EXPECTED_SCHEMA_ID (ADR-026), then "
+            "update PINNED_SHAPE_SHA256. If it is a pure comment/description "
+            "edit, just update PINNED_SHAPE_SHA256. This test exists because "
+            "the $id silently lapsed three times when nobody could see it.")
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

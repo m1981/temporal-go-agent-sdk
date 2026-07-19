@@ -1,4 +1,4 @@
-# .truth — append-only claims ledger (v0.9.0)
+# .truth — append-only claims ledger (v0.9.9)
 
 > Reader: any agent or human about to assert, trust, or re-verify a fact about this repository | Enables: filing a claim in one command, and knowing which claims are still live before acting on them | Update-trigger: the record schema, invariants, or CLI contract change
 
@@ -180,7 +180,9 @@ the snapshot cache is deliberately unbuilt until that warning fires).
                                        evidence-command screen, 010 session
                                        separation, 011 tombstones-need-a-
                                        terminal, 012 divergence subtype,
-                                       013 premise supersede (v0.6.4)
+                                       013 premise supersede, and the
+                                       batch-2 spec-precision ADRs 014+
+                                       (the directory lists the current set)
 
 ## Install (day 1)
 

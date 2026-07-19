@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "truth-ledger-record.v0.7",
+  "$id": "truth-ledger-record.v0.9",
   "title": "Truth ledger record",
-  "description": "One line of .truth/claims.jsonl. The ledger is append-only and event-sourced: status is never stored, only derived by folding records in (ts, id) order. v0.5 adds the ADR-002 work kernel kinds: `issue` (wk- envelope id) and `issue_event`. This schema is the durable contract; scripts/truth validate implements a stdlib mirror of it.",
+  "description": "One line of .truth/claims.jsonl. The ledger is append-only and event-sourced: status is never stored, only derived by folding records in (ts, id) order. v0.5 adds the ADR-002 work kernel kinds: `issue` (wk- envelope id) and `issue_event`. This schema is the durable contract; scripts/truth validate implements a stdlib mirror of it. The $id carries a two-component SCHEMA-CONTRACT version, independent of the product version and bumped only when the record SHAPE changes (a new kind, field, or constraint) -- ADR-026; a shape-fingerprint test forces the bump. The schema is a NECESSARY-not-sufficient gate: it fixes structure, but ADR-009's evidence-screen SEMANTICS (that a screened=true was actually screened, that a command is safe to re-execute) are enforced OPERATIONALLY at filing and recheck, not here -- so the schema is deliberately silent on them (ADR-027).",
   "type": "object",
   "required": [
     "id",
@@ -99,7 +99,8 @@
                   "string",
                   "null"
                 ],
-                "minLength": 1
+                "minLength": 7,
+                "description": "ADR-027: a git SHA prefix is >=7 everywhere the system emits one; when present as a string it must be >=7 (null = unanchored, allowed only for non-VERIFIED claims -- the VERIFIED branch below forbids null)"
               },
               "basis": {
                 "type": "string"
@@ -157,6 +158,13 @@
                     "evidence",
                     "anchor_commit"
                   ],
+                  "properties": {
+                    "anchor_commit": {
+                      "type": "string",
+                      "minLength": 7,
+                      "description": "ADR-027: a VERIFIED claim must carry a real anchor -- non-null string >=7. Matches the mirror's truthiness check (INV-B) and the CLI G1 gate that refuses head=None; the base union above allows null only for non-VERIFIED claims."
+                    }
+                  },
                   "anyOf": [
                     {
                       "properties": {
