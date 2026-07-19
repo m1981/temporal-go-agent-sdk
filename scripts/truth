@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""truth v0.9.8 -- append-only claims ledger with a native work kernel.
+"""truth v0.9.9 -- append-only claims ledger with a native work kernel.
 
 v0.9.8 (INV-M glob scope + commit-gate decidability, batch-2 H5/H6): three
   spec-precision ADRs, one with a real gate. ADR-023 (H5): INV-M is a
@@ -778,6 +778,28 @@ def issue_event_error(status, event):
         return f"cannot file '{event}' from status '{status}'"
     return None
 
+def issue_event_ts_error(issue_record, now):
+    """ADR-028: an issue_event must sort AFTER its issue record in the fold,
+    or fold_issues drops it as a forward reference (`ref in issues` is false
+    at the event's fold position) while intake -- which validates the
+    transition against the FOLDED status -- reports success. A future-dated
+    issue record (ts beyond skew of now) cannot be pushed past by
+    append_record's bounded clock-push, so any event filed now sorts before
+    it and is silently voided (`done`/`cancel` print '-> closed' yet the
+    issue stays open). Refuse at intake so the transition is never a lie;
+    order_check enforces the same coherence at the commit gate for records
+    that bypass intake. Clock-based, so it lives at intake, not in the
+    clock-free fold/validate path."""
+    ts = parse_ts(issue_record.get("ts") or "")
+    if ts is None or ts.tzinfo is None or now.tzinfo is None:
+        return None  # unparseable/naive ts is the ADR-015 profile's concern
+    if (ts - now).total_seconds() > SKEW_TOLERANCE_SECONDS:
+        return (f"issue {issue_record.get('id')} is dated in the future "
+                f"({issue_record.get('ts')}) -- an event filed now would sort "
+                "before it in the fold and be silently dropped (ADR-028); the "
+                "issue record's timestamp is invalid. Nothing was filed.")
+    return None
+
 def issue_premises(issues):
     """Premise links declared at creation (ADR-002 premise-at-birth)."""
     out = {}
@@ -1143,6 +1165,18 @@ def order_check(events):
     errors, warnings = [], []
     first_seen = {}
     max_ts, max_line = None, None
+    # ADR-028: an issue_event must sort AFTER the issue record it references,
+    # or fold_issues drops it as a forward reference (its referent has not
+    # folded yet). Collect each issue's fold-winning key (first-wins = the
+    # smallest fold_key) so an honest-clock event on a future-dated issue
+    # record -- which sorts before it -- is refused here, not silently voided.
+    issue_keys = {}
+    for ne in events:
+        e = ne[1]
+        if e.get("kind") == "issue" and e.get("id"):
+            k = fold_key(ne)
+            if e["id"] not in issue_keys or k < issue_keys[e["id"]]:
+                issue_keys[e["id"]] = k
     def cmp_ok(a, b):
         return (a.tzinfo is None) == (b.tzinfo is None)
     for n, ev in events:
@@ -1180,6 +1214,15 @@ def order_check(events):
                     "duplicate may share both id and ts")
         elif eid:
             first_seen[eid] = (ts_raw, n, canon(ev))
+        if ev.get("kind") == "issue_event":
+            ref = (ev.get("payload") or {}).get("issue")
+            if ref in issue_keys and fold_key((n, ev)) < issue_keys[ref]:
+                errors.append(
+                    f"line {n}: issue_event references {ref} but sorts before "
+                    "its issue record in fold order -- a forward reference the "
+                    "fold silently drops (ADR-028), so the transition would be "
+                    "inert. The issue record is dated after this event; fix "
+                    "its timestamp.")
         if ts and max_ts and cmp_ok(ts, max_ts) \
                 and (max_ts - ts).total_seconds() > SKEW_TOLERANCE_SECONDS:
             warnings.append(
@@ -1609,6 +1652,18 @@ def validate_events(events):
                                   "provenance (INV-B)")
             if p.get("evidence_class") == "INFERRED" and not p.get("basis"):
                 errors.append(f"line {n}: INFERRED claim missing basis")
+            # ADR-027: a git SHA prefix is >=7 everywhere the system emits
+            # one. The schema floors anchor_commit's string branch at 7
+            # (null still allowed for non-VERIFIED); mirror the floor for
+            # ANY claim, not just the VERIFIED branch -- the FS-2 mutant
+            # generator cannot reach this (it emits no null and its junk
+            # literal is 7 chars), so an explicit check and corpus fixture
+            # carry it. VERIFIED-null is already an INV-B error above.
+            anc = p.get("anchor_commit")
+            if isinstance(anc, str) and len(anc) < 7:
+                errors.append(f"line {n}: claim anchor_commit must be a git "
+                              "SHA prefix of at least 7 chars when present "
+                              "(ADR-027, schema minLength 7)")
         elif kind == "verdict":
             if p.get("verdict") not in VERDICTS or not p.get("claim") \
                     or not p.get("basis"):
@@ -1618,11 +1673,24 @@ def validate_events(events):
             if "subtype" in p and p["subtype"] != "mechanical":
                 errors.append(f"line {n}: verdict subtype must be "
                               "'mechanical' when present (ADR-012)")
+            # ADR-027: schema requires verdict.anchor_commit be a string
+            # >=7; the mirror had no length check (was weaker than schema).
+            if "anchor_commit" in p and (not isinstance(p["anchor_commit"], str)
+                                         or len(p["anchor_commit"]) < 7):
+                errors.append(f"line {n}: verdict anchor_commit must be a "
+                              "string of at least 7 chars (ADR-027, schema "
+                              "minLength 7)")
         elif kind == "invalidation":
             if not p.get("claim") or not p.get("commit"):
                 errors.append(f"line {n}: malformed invalidation")
             elif not ID_RE.match(str(p.get("claim"))):
                 errors.append(f"line {n}: invalidation claim ref not tr-hex8")
+            # ADR-027: schema floors invalidation.commit at 7; mirror had
+            # only the truthiness check above (was weaker than schema).
+            elif isinstance(p.get("commit"), str) and len(p["commit"]) < 7:
+                errors.append(f"line {n}: invalidation commit must be a git "
+                              "SHA of at least 7 chars (ADR-027, schema "
+                              "minLength 7)")
         elif kind == "contradicts":
             if not p.get("a") or not p.get("b") \
                     or not (p.get("basis") or "").strip():
@@ -2268,6 +2336,9 @@ def _issue_or_exit(issues, wid):
 def cmd_start(a):
     issues = fold_issues(load_events())
     status = _issue_or_exit(issues, a.issue_id)
+    tserr = issue_event_ts_error(issues[a.issue_id]["issue"], now_dt())
+    if tserr:
+        sys.exit(f"truth: {tserr}")
     event = "released" if a.release else "claimed"
     err = issue_event_error(status, event)
     if err:
@@ -2280,6 +2351,9 @@ def cmd_done(a):
     events = load_events()
     issues = fold_issues(events)
     status = _issue_or_exit(issues, a.issue_id)
+    tserr = issue_event_ts_error(issues[a.issue_id]["issue"], now_dt())
+    if tserr:
+        sys.exit(f"truth: {tserr}")
     if a.cancel and a.reopen:
         sys.exit("truth: --cancel and --reopen are mutually exclusive")
     event = "cancelled" if a.cancel else "reopened" if a.reopen else "closed"

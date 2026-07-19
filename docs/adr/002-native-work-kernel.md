@@ -17,6 +17,14 @@ NOT human-gated (it asserts neither completion nor falsity, so unlike
 `cancelled` it needs no `TRUTH_HUMAN`). So the full state graph is
 `open ⇄ claimed → closed`, with `reopened` and `released` the two
 return-to-`open` edges (from `closed` and `claimed` respectively).
+Amended by: ADR-028 (2026-07-19, M2/M3) — reproduces this state machine as a
+spec (a review found it defined only in prose here and in `issue_event_error`):
+intake is strict (the transition table), the fold is permissive except
+`cancelled` is terminal (later events ignored, like the claim fold after
+`retracted`), and `closed←open` is a legal skip-claim close. Also closes a
+composition hole: an `issue_event` on a future-dated issue record sorts before
+it and the fold drops it while intake reports success — now refused at intake
+and by `order_check`.
 Date: 2026-07-08
 Supersedes: — (narrows the role of the external-tracker default introduced
 with the v0.4.1 adapter seam; does not remove the seam)
