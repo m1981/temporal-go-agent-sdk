@@ -6,6 +6,11 @@ in a fresh sandbox (the audit method's instrument 7). Implemented in
 CLI v0.9.1. Canary faults B5–B6; permutation core test
 (`test_duplicate_id_equal_ts_folds_to_one_content`). Amends INV-I and
 INV-G/INV-N; extends ADR-008.
+Superseded by: ADR-031 (2026-07-20, v0.9.13) — for decision (b), the
+equal-ts substitution gate, only: `order_check` now refuses ANY
+content-distinct duplicate id regardless of ts relation. Decision (a),
+the `(ts, id, canon)` total fold order, is UNTOUCHED and remains this
+ADR's.
 Date: 2026-07-18
 Supersedes: — (closes the residual ADR-008's strictly-earlier rule left
 open)
