@@ -6,6 +6,18 @@ CLI. Ratifies the existing v0.2 implementation as normative; no behavior
 change. Canary FAULT D (fold-clock-free arm); core tests
 `test_ttl_boundary_is_strict_from_claim_ts`,
 `test_fold_never_synthesizes_ttl_expiry`.
+Amended by: note (2026-07-19, wk-8c4a6b9d) — an independent review
+(finding B-Maj2) demonstrated in a sandbox the workflow consequence this
+ADR's Non-goals imply but never spelled out: a TTL-expired claim that is
+re-verified `agree` goes `live` and is then re-staled by the immediately
+following scan, forever, because the TTL clock counts from the claim `ts`
+and no verdict restarts it (by design, per Non-goals). The operational
+rule is therefore: **an expired TTL claim is re-filed, not re-verified**
+— re-verification is the recovery path for *path-anchored* stales only
+(F2's effective anchor advances; no TTL analogue exists, deliberately).
+The paper's INV-J row is scoped to path-anchored claims accordingly, and
+Reference 7's DNS annotation now states the divergence (a DNS re-fetch
+restarts the TTL; here only re-filing does).
 Date: 2026-07-18
 Supersedes: — (pins prose underspecified in paper §1 / §4, the fold
 table, and INV-E; leaves the code path unchanged)

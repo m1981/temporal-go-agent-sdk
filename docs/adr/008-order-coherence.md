@@ -20,6 +20,10 @@ independent spec-only review (pi) found `format: date-time` annotative
 in draft-07 and offset heterogeneity breaking raw-string order for
 honest non-CLI writers (INV-I), which met exactly this note's
 condition.
+Superseded by: ADR-031 (2026-07-20, v0.9.13) — for the DETECTION rule
+(a) only: `order_check` now refuses ANY content-distinct duplicate id
+regardless of ts relation, subsuming the strictly-earlier case. The
+clock-regression warning (b) and this ADR's non-goals stand unchanged.
 Date: 2026-07-11
 Supersedes: — (converts the paper's §8 item 6 composition gap from
 accepted to detected-at-commit)
