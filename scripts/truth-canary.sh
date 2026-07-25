@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# truth-canary.sh v0.9.0 -- seeded-fault acceptance suite (v0.9.0 issue #4 C1-C5 contradicts/DISPUTED + SC session-close survival gate + v0.7.1 issue #5 W5-W8 impact --inverse + v0.7.0 ADR-014 AC1-AC7 acceptance oracles + v0.6.4 ADR-013 R10 premise supersede +seeded faults + TL hardening + adapter seam + bd normalization + ADR-002 work kernel + ADR-006 issue-fold hardening + INV-M dead-tripwire intake checks + ADR-005 impact verb + spec-health/doc-health incl. degradation paths + v0.6 solo-regime hardening: ADR-007 Q-faults, ADR-008 B-faults, ADR-009 E-faults, ADR-010 V-faults, ADR-011 H-faults, ADR-012 M1 + v0.6.2 review-finding faults: F1 arg-deny E5, F2 ts-evasion B3/B4, F3 scope-signal Q5/Q6 + v0.6.3 TL-2 work-kernel discovery warn + ADR-023 H5 FAULT T dormant-glob-materializes arm + ADR-024 FAULT T unreachable-glob-refused arm + ADR-025 FAULT DG doctor-decides-hook-or-CI + ADR-027 FAULT AN1-AN5 anchor_commit/commit git-SHA-prefix floor + ADR-028 FAULT IF future-dated-issue transition coherence + ADR-009/M4 FAULT SD screen-gates-execution ordering).
+# truth-canary.sh v0.9.0 -- seeded-fault acceptance suite (v0.9.0 issue #4 C1-C5 contradicts/DISPUTED + SC session-close survival gate + v0.7.1 issue #5 W5-W8 impact --inverse + v0.7.0 ADR-014 AC1-AC7 acceptance oracles + v0.6.4 ADR-013 R10 premise supersede +seeded faults + TL hardening + adapter seam + bd normalization + ADR-002 work kernel + ADR-006 issue-fold hardening + INV-M dead-tripwire intake checks + ADR-005 impact verb + spec-health/doc-health incl. degradation paths + v0.6 solo-regime hardening: ADR-007 Q-faults, ADR-008 B-faults, ADR-009 E-faults, ADR-010 V-faults, ADR-011 H-faults, ADR-012 M1 + v0.6.2 review-finding faults: F1 arg-deny E5, F2 ts-evasion B3/B4, F3 scope-signal Q5/Q6 + v0.6.3 TL-2 work-kernel discovery warn + ADR-023 H5 FAULT T dormant-glob-materializes arm + ADR-024 FAULT T unreachable-glob-refused arm + ADR-025 FAULT DG doctor-decides-hook-or-CI + ADR-027 FAULT AN1-AN5 anchor_commit/commit git-SHA-prefix floor + ADR-028 FAULT IF future-dated-issue transition coherence + ADR-009/M4 FAULT SD screen-gates-execution ordering + v0.9.12 R3/ADR-030 FAULT RA reaffirm-mismatch-never-auto-filed + v0.9.13 R6/ADR-031 unified duplicate-id rule: B1/B3-B5 expect the one message, FAULT K2 later-ts distinct duplicate flips to refused + v0.9.14 R12/ADR-032 FAULT SD-decay --scope-ok default-expiry (4 arms incl. negative control) + R13/ADR-033 FAULT OV override-velocity verbatim-repeat advisory (2 arms incl. negative control)).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PASS=0; FAIL=0
@@ -562,6 +562,7 @@ fi
 
 # ---- FAULT K (v0.4): duplicate-id append must not resurrect a tombstone ----
 say "FAULT K (INV-G'): appending a duplicate claim id must not reset status"
+cp .truth/claims.jsonl claims.k.bak
 python3 - "$CID_H" <<'PYEOF'
 import json, sys
 rec={"id":sys.argv[1],"kind":"claim","actor":"agent-x","session":"s-evil",
@@ -576,8 +577,22 @@ if $T list --retracted --json | grep -q "$CID_H" && \
 else
   miss "duplicate-id append resurrected retracted $CID_H"
 fi
+# ADR-031 (v0.9.13) flips this arm's validate expectation: the later-ts
+# content-distinct duplicate is harmless to the first-wins fold (checked
+# above -- UNCHANGED) but has no legitimate producer, so validate now
+# refuses it instead of accepting it. Pre-v0.9.13 this record stayed in
+# the ledger with validate green; now the arm restores the ledger.
+say "FAULT K2 (ADR-031): the same LATER-ts distinct duplicate must fail validate"
+if ! grep -q "resurrection via duplicate id" .truth/claims.jsonl; then
+  miss "fault injection failed: later-ts duplicate was never appended"
+elif $T validate >/dev/null 2>&1; then
+  miss "validate passed a later-ts content-distinct duplicate (ADR-031 open)"
+else
+  ok "validate refused the later-ts distinct duplicate (ADR-031: only byte-identical union-merge duplicates may share an id)"
+fi
+mv claims.k.bak .truth/claims.jsonl
 
-say "FAULT B1 (ADR-008): a BACKDATED duplicate-id append must fail validate (commit gate blocks)"
+say "FAULT B1 (ADR-008 case, ADR-031 rule): a BACKDATED duplicate-id append must fail validate (commit gate blocks)"
 cp .truth/claims.jsonl claims.b1.bak
 python3 - "$CID_H" <<'PYEOF'
 import json, sys
@@ -591,12 +606,14 @@ if ! grep -q "content substitution via backdated" .truth/claims.jsonl; then
   miss "fault injection failed: backdated duplicate was never appended"
 elif $T validate >/dev/null 2>&1; then
   miss "validate passed a backdated duplicate id (canonical-order substitution open)"
+elif ! $T validate 2>&1 | grep -q "duplicate-id substitution (ADR-031)"; then
+  miss "validate refused the backdated duplicate but not with the unified ADR-031 message"
 else
-  ok "validate failed the backdated duplicate; the commit gate now blocks INV-G's composition gap"
+  ok "validate failed the backdated duplicate with the ADR-031 unified message; the commit gate blocks INV-G's composition gap"
 fi
 mv claims.b1.bak .truth/claims.jsonl
 
-say "FAULT B2 (ADR-008): an IDENTICAL duplicated line (union-merge shape) must still validate"
+say "FAULT B2 (ADR-008, ADR-031 exemption): an IDENTICAL duplicated line (union-merge shape) must still validate"
 cp .truth/claims.jsonl claims.b2.bak
 tail -1 .truth/claims.jsonl >> .truth/claims.jsonl
 if $T validate >/dev/null 2>&1; then
@@ -606,7 +623,7 @@ else
 fi
 mv claims.b2.bak .truth/claims.jsonl
 
-say "FAULT B3 (ADR-008, F2): a backdated duplicate with a tz-NAIVE ts must fail validate"
+say "FAULT B3 (ADR-008/F2 case, ADR-031 rule): a backdated duplicate with a tz-NAIVE ts must fail validate"
 cp .truth/claims.jsonl claims.b3.bak
 python3 - "$CID_H" <<'PYEOF'
 import json, sys
@@ -622,12 +639,14 @@ if ! grep -q "naive-ts backdated" .truth/claims.jsonl; then
   miss "fault injection failed: naive-ts duplicate was never appended"
 elif $T validate >/dev/null 2>&1; then
   miss "validate passed a naive-ts backdated duplicate (F2 evasion still open)"
+elif ! $T validate 2>&1 | grep -q "duplicate-id substitution (ADR-031)"; then
+  miss "validate refused the naive-ts duplicate but not with the unified ADR-031 message"
 else
-  ok "validate failed the naive-ts backdated duplicate (F2 closed)"
+  ok "validate failed the naive-ts backdated duplicate (F2 closed, ADR-031 message)"
 fi
 mv claims.b3.bak .truth/claims.jsonl
 
-say "FAULT B4 (ADR-008, F2): a backdated duplicate with an UNPARSEABLE ts must fail validate"
+say "FAULT B4 (ADR-008/F2 case, ADR-031 rule): a backdated duplicate with an UNPARSEABLE ts must fail validate"
 cp .truth/claims.jsonl claims.b4.bak
 python3 - "$CID_H" <<'PYEOF'
 import json, sys
@@ -643,12 +662,14 @@ if ! grep -q "junk-ts backdated" .truth/claims.jsonl; then
   miss "fault injection failed: junk-ts duplicate was never appended"
 elif $T validate >/dev/null 2>&1; then
   miss "validate passed a junk-ts backdated duplicate (F2 evasion still open)"
+elif ! $T validate 2>&1 | grep -q "duplicate-id substitution (ADR-031)"; then
+  miss "validate refused the junk-ts duplicate but not with the unified ADR-031 message"
 else
-  ok "validate failed the junk-ts backdated duplicate (F2 closed)"
+  ok "validate failed the junk-ts backdated duplicate (F2 closed, ADR-031 message)"
 fi
 mv claims.b4.bak .truth/claims.jsonl
 
-say "FAULT B5 (ADR-016, C1): an EQUAL-ts duplicate id with different content must fail validate"
+say "FAULT B5 (ADR-016/C1 case, ADR-031 rule): an EQUAL-ts duplicate id with different content must fail validate"
 cp .truth/claims.jsonl claims.b5.bak
 python3 - "$CID_H" <<'PYEOF'
 import json, sys
@@ -656,7 +677,8 @@ cid = sys.argv[1]
 # copy the genuine record's ts byte-for-byte -- NOT backdated. It ties
 # (ts, id) with the genuine claim, so file order alone would decide the
 # fold winner and two union-merge directions could disagree (INV-I).
-# ADR-008's strictly-earlier rule passed this; ADR-016 refuses it.
+# ADR-008's strictly-earlier rule passed this; ADR-016 refused it;
+# ADR-031's unified content-distinct rule (v0.9.13) subsumes both.
 genuine = next(json.loads(l) for l in open(".truth/claims.jsonl")
                if json.loads(l).get("id") == cid)
 rec = {"id": cid, "kind": "claim", "actor": "agent-x", "session": "s-evil",
@@ -670,8 +692,10 @@ if ! grep -q "equal-ts copied-timestamp" .truth/claims.jsonl; then
   miss "fault injection failed: equal-ts duplicate was never appended"
 elif $T validate >/dev/null 2>&1; then
   miss "validate passed an equal-ts substitution duplicate (C1 open -- INV-I falsifiable)"
+elif ! $T validate 2>&1 | grep -q "duplicate-id substitution (ADR-031)"; then
+  miss "validate refused the equal-ts duplicate but not with the unified ADR-031 message"
 else
-  ok "validate failed the equal-ts substitution duplicate (C1 closed at the gate)"
+  ok "validate failed the equal-ts substitution duplicate (C1 closed at the gate, ADR-031 message)"
 fi
 mv claims.b5.bak .truth/claims.jsonl
 
@@ -1695,6 +1719,160 @@ if $T validate >/dev/null 2>&1; then
 else
   miss "contradicts records fail validate"; $T validate || true
 fi
+
+# R3 (ADR-030): `reaffirm` automates ONLY the mechanical re-confirmation
+# of unchanged evidence. The load-bearing negative: a stale claim whose
+# evidence output CHANGED must NEVER be auto-agreed -- and never
+# auto-diverged either (mechanical-vs-genuine is ADR-012's judgment call,
+# so a mismatch files NOTHING and is listed for dispatch). The unchanged
+# peer claim in the same sweep proves the contrast: it IS reaffirmed, and
+# its advanced anchor (F2) survives the next scan.
+say "FAULT RA (ADR-030): reaffirm must file nothing on changed evidence, reaffirm the unchanged peer"
+RA="$(mktemp -d)"; RA_PREV="$PWD"
+mkrepo "$RA"   # NB: mkrepo cd's into $RA. No subshell -- ok/miss mutate the
+               # PASS/FAIL counters; cwd restored via $RA_PREV below.
+echo "solid"  > ra-ok.txt
+echo "peer"   > ra-peer.txt
+echo "shifty" > ra-mm.txt
+git add -A && git commit -qm "ra: init" --no-verify -q
+CID_RA_OK=$($T claim "ra-ok.txt says solid" --class VERIFIED \
+        --evidence-cmd "cat ra-ok.txt" --paths "ra-ok.txt,ra-peer.txt" --tier P1)
+CID_RA_MM=$($T claim "ra-mm.txt says shifty" --class VERIFIED \
+        --evidence-cmd "cat ra-mm.txt" --paths "ra-mm.txt" --tier P1)
+TRUTH_SESSION=s-canary-verifier $T verdict "$CID_RA_OK" agree --basis "canary: verified at filing" >/dev/null
+TRUTH_SESSION=s-canary-verifier $T verdict "$CID_RA_MM" agree --basis "canary: verified at filing" >/dev/null
+echo "touched" >> ra-peer.txt   # stales the OK claim; its evidence output is unchanged
+echo "mutated" >  ra-mm.txt     # stales the MM claim; its evidence output CHANGED
+git add -A && git commit -qm "ra: mutate watched paths" --no-verify -q
+$T invalidate-scan --quiet
+N_RA=$(grep -c "" .truth/claims.jsonl)
+RAOUT=$(TRUTH_SESSION=s-canary-reaffirm $T reaffirm 2>/dev/null)
+MM_VERDICTS=$(grep '"kind": "verdict"' .truth/claims.jsonl | grep -c "\"claim\": \"$CID_RA_MM\"")
+if printf '%s\n' "$RAOUT" | grep -q "diverged evidence -- dispatch for judgment" \
+   && [ "$MM_VERDICTS" -eq 1 ] \
+   && $T list --stale | grep -q "$CID_RA_MM"; then
+  ok "mismatch filed NOTHING: $CID_RA_MM stays stale, listed for dispatch"
+else
+  miss "reaffirm auto-filed on changed evidence (or lost the dispatch report) for $CID_RA_MM"
+fi
+if [ "$(grep -c "" .truth/claims.jsonl)" -eq $((N_RA + 1)) ] \
+   && tail -1 .truth/claims.jsonl | grep -q "reaffirm: hash-match, no judgment re-run" \
+   && $T list --live | grep -q "$CID_RA_OK"; then
+  ok "unchanged peer reaffirmed: exactly one agree appended, $CID_RA_OK live again"
+else
+  miss "reaffirm did not re-confirm the unchanged claim $CID_RA_OK (or appended more than its one agree)"
+fi
+$T invalidate-scan --quiet   # F2: the agree carried HEAD as the new anchor
+if $T list --live | grep -q "$CID_RA_OK"; then
+  ok "advanced anchor survives the next scan: $CID_RA_OK stays live (F2)"
+else
+  miss "reaffirmed claim $CID_RA_OK re-staled on the next scan (anchor did not advance)"
+fi
+cd "$RA_PREV"
+rm -rf "$RA"
+
+# ---- FAULT SD-decay (ADR-032, v0.9.14): --scope-ok default expiry -------
+# A scope_basis override (ADR-007) filed WITHOUT --ttl-days is stamped a
+# default 30-day expiry + ttl_default; it never refuses. Four arms: (1) the
+# default lands (arm goes red if override_decay is patched out -- the
+# assertion reads the exact ttl_days/ttl_default the mechanism writes);
+# (2) an explicit --ttl-days is preserved unflagged; (3) NEGATIVE CONTROL:
+# an equally old PLAIN claim gets no default and stays live after a scan;
+# (4) the expired override is stale and reaffirm lists it as re-file
+# (ADR-032 -> ADR-019 scan -> ADR-030 arm 1). Own sandbox; no subshell so
+# ok/miss mutate the counters; cwd restored via $SD_PREV.
+say "FAULT SD-decay (ADR-032): a --scope-ok override without --ttl-days must decay to a default 30-day expiry"
+SD="$(mktemp -d)"; SD_PREV="$PWD"
+mkrepo "$SD"
+echo "data" > f.txt
+git add -A && git commit -qm "sd: init" --no-verify -q
+SD_SB="the include filter deliberately covers the whole codebase"
+SD_EC="grep -rc data --include=f.txt ."
+CID_SD1=$($T claim "no occurrences remain anywhere in the codebase" \
+          --class VERIFIED --evidence-cmd "$SD_EC" --paths f.txt --tier P1 \
+          --scope-ok "$SD_SB" 2>/dev/null)
+if python3 -c "import json,sys; p=json.loads(open('.truth/claims.jsonl').read().splitlines()[-1])['payload']; sys.exit(0 if p.get('ttl_days')==30 and p.get('ttl_default') is True else 1)"; then
+  ok "scope-ok override without --ttl-days landed ttl_days=30 + ttl_default ($CID_SD1)"
+else
+  miss "scope-ok override did not decay to the default TTL (mechanism patched out?)"
+fi
+$T claim "no occurrences remain anywhere in the codebase" \
+   --class VERIFIED --evidence-cmd "$SD_EC" --paths f.txt --tier P1 \
+   --scope-ok "$SD_SB" --ttl-days 90 --duplicate-ok >/dev/null 2>&1
+if python3 -c "import json,sys; p=json.loads(open('.truth/claims.jsonl').read().splitlines()[-1])['payload']; sys.exit(0 if p.get('ttl_days')==90 and 'ttl_default' not in p else 1)"; then
+  ok "explicit --ttl-days 90 preserved unflagged (the visible opt-out)"
+else
+  miss "explicit --ttl-days was overwritten or flagged defaulted"
+fi
+CID_SD3=$(TRUTH_NOW="2026-06-01T00:00:00+00:00" $T claim \
+          "f.txt plainly contains data" --class VERIFIED \
+          --evidence-cmd "cat f.txt" --paths f.txt --tier P2 2>/dev/null)
+$T invalidate-scan --quiet
+if $T list --stale --json | grep -q "$CID_SD3"; then
+  miss "negative control failed: a plain claim got a default TTL and expired"
+else
+  ok "negative control: an equally old PLAIN claim has no default TTL, stays live after a scan"
+fi
+CID_SD4=$(TRUTH_NOW="2026-06-01T00:00:00+00:00" $T claim \
+          "no matches exist anywhere in the whole repo" --class VERIFIED \
+          --evidence-cmd "$SD_EC" --paths f.txt --tier P1 \
+          --scope-ok "$SD_SB" 2>/dev/null)
+$T invalidate-scan --quiet
+SD4OUT=$(TRUTH_SESSION=s-sd-reaffirm $T reaffirm --dry-run 2>/dev/null)
+if $T list --stale --json | grep -q "$CID_SD4" \
+   && printf '%s\n' "$SD4OUT" | grep -q "re-file required" \
+   && printf '%s\n' "$SD4OUT" | grep -q "$CID_SD4"; then
+  ok "expired scope-ok override is stale, reaffirm triages it to re-file ($CID_SD4)"
+else
+  miss "expired override not staled or not triaged to the ttl re-file arm"
+fi
+cd "$SD_PREV"
+rm -rf "$SD"
+
+# ---- FAULT OV (ADR-033, v0.9.14): override-velocity verbatim-repeat -------
+# `truth stats` raises a NON-blocking advisory when a scope justification
+# is re-filed verbatim (tokens() token-set-identical) after the prior claim
+# died. Two arms: (1) a verbatim re-justification after expiry produces the
+# advisory (red if the detector is patched out); (2) NEGATIVE CONTROL: a
+# genuinely narrowed re-file produces NO advisory.
+say "FAULT OV (ADR-033): a verbatim scope re-justification after expiry must raise the advisory; a narrowed one must not"
+OV="$(mktemp -d)"; OV_PREV="$PWD"
+mkrepo "$OV"
+echo "data" > f.txt
+git add -A && git commit -qm "ov: init" --no-verify -q
+OV_SB="the include filter deliberately covers the whole codebase"
+OV_EC="grep -rc data --include=f.txt ."
+CID_OV1=$(TRUTH_NOW="2026-06-01T00:00:00+00:00" $T claim \
+          "no occurrences remain anywhere in the codebase" --class VERIFIED \
+          --evidence-cmd "$OV_EC" --paths f.txt --tier P1 \
+          --scope-ok "$OV_SB" 2>/dev/null)
+$T invalidate-scan --quiet   # CID_OV1 -> stale (ttl, ttl_default)
+CID_OV2=$($T claim "no occurrences remain anywhere in the codebase" \
+          --class VERIFIED --evidence-cmd "$OV_EC" --paths f.txt --tier P1 \
+          --scope-ok "$OV_SB" 2>/dev/null)   # same sentence + justification
+OVOUT=$($T stats 2>/dev/null)
+if printf '%s\n' "$OVOUT" | grep -q "ADR-033" \
+   && printf '%s\n' "$OVOUT" | grep -q "$CID_OV2" \
+   && printf '%s\n' "$OVOUT" | grep -q "$CID_OV1"; then
+  ok "verbatim re-justification after expiry raised the advisory ($CID_OV2 vs $CID_OV1)"
+else
+  miss "override-velocity advisory missing for a verbatim re-justification (detector patched out?)"
+fi
+CID_OV3=$(TRUTH_NOW="2026-06-01T00:00:00+00:00" $T claim \
+          "every call site is covered by the services grep" --class VERIFIED \
+          --evidence-cmd "$OV_EC" --paths f.txt --tier P2 \
+          --scope-ok "services is the only place this pattern can appear" 2>/dev/null)
+$T invalidate-scan --quiet   # CID_OV3 -> stale
+CID_OV4=$($T claim "every call site is covered by the services grep" \
+          --class VERIFIED --evidence-cmd "$OV_EC" --paths f.txt --tier P2 \
+          --scope-ok "now narrowed to the single services subtree after refactor" 2>/dev/null)
+if $T stats --json 2>/dev/null | python3 -c "import json,sys; o=json.load(sys.stdin)['overrides']; ids=[r['claim'] for r in o['repeats']]; sys.exit(0 if '$CID_OV4' not in ids and '$CID_OV2' in ids else 1)"; then
+  ok "negative control: a genuinely narrowed re-file produced no advisory ($CID_OV4)"
+else
+  miss "override-velocity advisory false-fired on a genuinely narrowed re-file"
+fi
+cd "$OV_PREV"
+rm -rf "$OV"
 
 say ""
 say "canary result: $PASS caught, $FAIL missed"

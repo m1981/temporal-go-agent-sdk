@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# check-truth.sh v0.4 -- pre-commit / CI gate for the truth ledger.
+# check-truth.sh -- pre-commit / CI gate for the truth ledger.
+# Gate contract v0.4 (the script's own semantics, unchanged since);
+# current CLI: v0.9.15 -- this line is pinned in lockstep with the CLI
+# docstring by test-truth-core.py TestCrossSurfaceVersions (ADR-026).
 #
 # INV-A (STRICT append-only): the staged ledger must be a line-prefix
 #   extension of the committed ledger. This blocks deletions, edits, AND

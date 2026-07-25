@@ -1,436 +1,21 @@
 #!/usr/bin/env python3
-"""truth v0.9.9 -- append-only claims ledger with a native work kernel.
+"""truth v0.9.15 -- append-only claims ledger with a native work kernel.
 
-v0.9.8 (INV-M glob scope + commit-gate decidability, batch-2 H5/H6): three
-  spec-precision ADRs, one with a real gate. ADR-023 (H5): INV-M is a
-  static-dead-tripwire gate, NOT a liveness guarantee -- a glob over a
-  REACHABLE namespace is dormant (fires when it fills), refuting "an empty
-  glob can never fire". ADR-024 (H5 follow-up, wk-dc763341): a glob over an
-  UNREACHABLE namespace (`.git/*`, absolute, trailing-slash, `.`/`..`/empty
-  component) is a dead tripwire despite the glob exemption, now REFUSED at
-  intake (dead_glob_paths) -- sound, not complete; the tracked symlink is
-  the undecidable residual. ADR-025 (H6, wk-4a7450d8): the README's one MUST
-  (a `check-truth` commit gate via hook OR CI) is now DECIDABLE by `doctor`,
-  which greps top-level CI configs for the gate script so a CI-only repo
-  passes instead of false-failing; the invariant table + paper Sec 8 item 5
-  disclose that INV-A/INV-G/INV-N + the ADR-008 detections are conditional
-  on the commit gate running. Canary FAULTs T (dormant + unreachable glob),
-  DG (doctor decides hook-or-CI, 4 arms).
+Facts are appended as JSONL records to .truth/claims.jsonl (INV-A:
+append-only, commit-gated by scripts/check-truth.sh); every status is
+derived by a pure, confluent fold over the records in the total
+(ts, id, canon) order (ADR-016), so union-merged branch ledgers reach
+one state. Internals are FUNCTIONAL CORE / IMPERATIVE SHELL: decisions
+and derivations are pure functions (no subprocess, filesystem, clock,
+or env), unit-tested by scripts/test-truth-core.py; git, files,
+evidence execution, argparse, and printing live at the edge,
+acceptance-tested by scripts/truth-canary.sh (seeded faults, every one
+must be caught). Event kinds, fold semantics, invariants: see
+.truth/README.md and docs/adr/.
 
-v0.9.7 (evidence-deny baseline, wk-372de09c): ADR-022 adds an anti-footgun
-  guardrail beneath the allowlist (which stays the boundary, ADR-021). A
-  TEMPLATE-owned `.truth/evidence-deny` file lists programs whose sole job
-  is to run other programs (shells + generic executors/exec-wrappers +
-  privilege-then-run); the evidence screen refuses them in program
-  position even if a consumer allowlisted one by accident (deny-wins),
-  evidence screen only -- ADR-014 oracles still run `bash run.sh`. It is
-  template-owned (NOT copier `_skip_if_exists`, unlike the consumer-owned
-  allowlist), so `copier update` keeps the baseline current; absent it
-  fails open, the allowlist still gating. `doctor` additionally warns
-  (non-blocking) on grey-zone code-executors (git/python/curl/...) in the
-  allowlist. An adversarial review found and closed one RCE gap (`time
-  bash -c <cmd>`; time added to the baseline). NOT a completeness claim --
-  the allowlist is the boundary. Core test_denylist_wins_over_allowlist /
-  _deny_baseline_not_applied_to_oracles / _doctor_grey_zone_set; canary
-  FAULT ED.
-
-
-v0.9.6 (independent ledger-code review, H4 -- SECURITY): ADR-021
-  (wk-5b2b724e) closes a live evidence-screen bypass. The screen tokenizes
-  with shlex but run_evidence executes with subprocess shell=True
-  (/bin/sh); shlex treats a newline as whitespace while /bin/sh treats it
-  as a statement separator, so `grep x /dev/null\ntouch PWNED` put `touch`
-  in ARGUMENT position (screen approves) while the shell RAN it --
-  unscreened code execution in a verifier's recheck session. Fix: the
-  screen refuses ASCII control characters except tab, so its token stream
-  is a sound over-approximation of the shell's. An adversarial review
-  could not break the fixed screen, but escalated H4's second half: the
-  PROGRAM_ARG_DENY blocklist cannot bound a VCS (git filter-branch
-  --tree-filter is RCE), so the security boundary is the bare-name
-  ALLOWLIST, not the deny table -- docs corrected to stop implying the
-  blocklist makes git safe, git kept out of the default allowlist by
-  design, enumerable gaps closed (git -o, sort --compress-program). Core
-  test_screen_rejects_control_chars / test_arg_deny_covers_h4_gaps; canary
-  FAULT ES.
-
-
-v0.9.5 (independent ledger-code review, H3 -- spec-precision, zero
-  behavior change): ADR-020 (wk-b35d3849) pins the fold's status as ONE
-  total function -- fold every event in (ts, id, canon) order, each
-  verdict/invalidation sets status last-writer-wins, and `retracted` is
-  absorbing (checked on the folded status, not ts). So `cannot_verify`,
-  `diverged`, and `stale` are RECOVERABLE (a later `agree` returns them
-  to live) while `retracted` is the sole terminal verdict. H3 also
-  escalated this to "a verdict-path analogue of C1"; that was REJECTED
-  with evidence (live sandbox + an adversarial 600-trial confluence
-  fuzz): distinct verdict ids + the ADR-016 total order keep the verdict
-  path confluent (C1 broke confluence), backdating only lowers a record's
-  key so it is dominated by filing at ts=now, and the sole residual is the
-  accepted section-8 forgery -- which even trips an ADR-008 warning. No
-  runtime gate added. Core tests test_verdict_precedence_is_confluent /
-  _negative_verdicts_are_recoverable / _retracted_absorbs_in_any_order;
-  canary FAULT RV.
-
-
-v0.9.4 (independent ledger-code review, H1/H2 -- spec-precision, zero
-  behavior change): two conformance defects where the prose underdetermined
-  the shipped code, so a clean-room second implementer would diverge.
-  ADR-018 (H1, wk-c93f78bd): near-duplicate intake is symmetric Jaccard
-  |A n B|/|A u B| over the SET of maximal [a-z0-9]+ runs of the lowercased
-  text, against the active set {live, unverified} -- NOT the overlap
-  coefficient a bare "token overlap" reading invites (they part ways on a
-  strict token-subset, the elaboration case). ADR-019 (H2, wk-192107ef):
-  TTL expiry counts from the claim's own ts with a STRICT boundary
-  (now - ts > ttl_days), and the fold reads no clock -- expiry is
-  materialized by invalidate-scan as an invalidation record, keeping the
-  fold a pure confluent function of the log. Both ratify v0.4/v0.2
-  behavior as normative and lock it: core tests + canary FAULT I
-  metric-identity arm and FAULT D fold-clock-free arm.
-
-v0.9.3 (ADR-017, wk-eaa42782): supersede authority. Source: independent
-  review finding C3 (Critical), confirmed live -- retraction terminality
-  was defended only at the status layer. `truth premise --supersedes`
-  refused only live/unverified old premises and carried no human gate,
-  so an agent (no TRUTH_HUMAN, a normal verb, no forgery) could redirect
-  a HUMAN-retracted P0 premise to a fresh claim and release the work the
-  retraction was blocking -- the paper's "cannot be undone" promise spent
-  at the readiness layer. Fix: superseding a `retracted` premise now
-  requires the ADR-011 human gate (TRUTH_HUMAN + typed-id ack); the
-  mechanical dead states (stale/diverged/cannot_verify/missing) stay
-  ungated -- no human decided those. Amends ADR-013. Canary FAULT R11.
-
-v0.9.2 (independent spec review, MEDIUM-1/2/3): override auditability +
-  cross-surface coherence. MEDIUM-1 (wk-00b8ee57): the --duplicate-ok
-  override left no trace, unlike scope_basis/screened. The G8 gate now
-  computes the near-duplicate conflict unconditionally and stamps
-  `payload.overridden_duplicates` (the active claim ids the override
-  declared distinct from) -- attackable ledger content, schema + mirror
-  + corpus + canary FAULT I trace. MEDIUM-3 (wk-15335617): schema and
-  mirror now forbid `accept.returncode` on an unexecuted acceptance
-  (executed=false); README states the missing-allowlist fails-closed
-  exception; ADR-002's superseded last-wins sentence gets an inline
-  ADR-006 marker. MEDIUM-2 (wk-813b84d4) was doc-only (invariant-table
-  rows INV-O/P/Q, INV-H broadened). No fold or gate-decision change.
-
-v0.9.1 (ADR-016, wk-280e0b76): total fold order + equal-ts gate. Source:
-  independent spec review finding C1 (Critical) -- the fold's (ts, id)
-  order is NOT total: a duplicate id carrying a COPIED (equal) ts ties
-  both components, and Python's stable sort then resolves the tie by
-  file position -- the one thing section 1 promises the fold ignores.
-  ADR-008's order_check keyed on strictly-earlier ts, so an equal-ts
-  forgery passed validate, and a union merge could seat the tie in
-  either file order -> two repositories, two fold results, content
-  substitution on one side, validate green everywhere (INV-I falsified;
-  ADR-008's own named falsifier reached with NO backdated ts). Two
-  complementary fixes: (a) fold_key() appends canon() -- the canonical
-  record serialization -- as a third, content-derived sort key, so
-  distinct records never tie and every permutation folds identically;
-  (b) order_check refuses a duplicate id with equal ts and non-identical
-  content, the byte-identical union-merge shape (B2) still passing.
-  Canary FAULTS B5-B6; permutation + validate core tests.
-
-v0.9.0 (issue #4, wk-3a8a725f): `contradicts` -- 29148 set consistency
-  made syntax (conformance rule R5). Near-dup intake catches
-  restatement; nothing caught contradiction -- two incompatible live
-  claims coexisted until a human diffed them (field: two back-panel
-  formulas, two LEGRABOX width formulas). New record kind `contradicts`
-  {a, b, basis}: a DECLARED edge, mirroring premise -- no NLP, the
-  moment a gate needs a model to fire it is a review, not a refusal.
-  Fold: a post-pass over the UNDERLYING statuses -- for every edge
-  whose two endpoints would otherwise both be live, both derive
-  DISPUTED. Evaluating edges against pre-edge statuses (never
-  iteratively) keeps the fold confluent and makes multi-edge chains
-  order-independent; disputed status_ts advances to the edge ts when
-  later (safe as a string compare under ADR-015). DISPUTED behaves
-  like diverged downstream: premise_check blocks, spec-health fails
-  citers, queue lists BOTH sides naming the counterpart, impact stops
-  whispering for it; inverse still counts it as watching (knowledge in
-  dispute, not absence). Resolution needs no new verb: retract,
-  supersede, or re-file one side -- the edge stops firing the moment
-  either endpoint is not live, and a dormant edge (an endpoint
-  unverified/stale/dead) fires nothing. Intake refusals: unknown ids,
-  self-edge, duplicate edge (either direction), retracted endpoint
-  (already resolved), empty basis. Canary FAULTS C1-C5.
-
-v0.8.1 (ADR-015, wk-c7378976): canonical timestamp profile. Source: an
-  independent spec-only review (pi, 2026-07-17; findings HIGH-1 and
-  MEDIUM-4) -- the fold sorts the raw ts STRING, but nothing constrained
-  the string's form: schema format:date-time is annotative in draft-07,
-  and validate never looked. An honest non-CLI writer using `Z` or a
-  non-UTC offset would silently misorder events and break INV-I
-  confluence. Three moves, discharging ADR-008's deferred F5 check:
-  (a) the profile now_iso() always emitted -- fixed-width UTC
-  microseconds, YYYY-MM-DDTHH:MM:SS.ssssss+00:00 -- is mandated by
-  schema `pattern` and validate-mirror TS_RE in lockstep (FS-2 mutants
-  exercise both on every seed); (b) TRUTH_NOW overrides are normalized
-  to aware-UTC so the test hook cannot mint a nonconforming record;
-  (c) an HLC-degenerate clock-push at append bumps a real-clock record
-  1 microsecond past a ledger tail it would otherwise sort before,
-  bounded by ADR-008's skew tolerance (beyond it, the honest clock is
-  kept and the regression warning fires). Canary FAULTS TS1-TS3; corpus
-  fixtures for Z/offset/precision/naive forms.
-
-v0.8.0 (issue #3, wk-16a3bff7): `baseline` -- set-level status
-  accounting (ISO 10007). `baseline <ref>` reads the ledger at a git
-  ref (`git show`), runs the SAME fold, and emits the frozen set:
-  claims by status/tier, issues by state, with sorted id lists --
-  deterministic JSON, no volatile timestamps, so redirect-and-commit
-  gives an auditable artifact. `baseline <a> --diff <b>` folds both and
-  prints the delta in release-notes shape: born records (with their
-  b-status), status transitions grouped from->to, and DISAPPEARED
-  records -- in an append-only ledger a record present at an ancestor
-  and absent at a descendant means rewritten history, so disappearance
-  is an omission alarm (the loophole map's named failure mode) with its
-  own exit code 5, gateable. Exit 2 = unreadable ref (usage), 0
-  otherwise. Read-only, no fold change, no new record kind, no
-  persistence by the CLI (10007's baseline artifact is the caller's
-  redirect). Canary FAULTS BL1-BL4.
-
-v0.7.2 (issue #7, wk-75aa9735, owner decision 2026-07-17): path-form
-  accept-allow entries. First-consumer dogfood found the gap the same
-  day ADR-014 shipped: the repo's REAL suite interpreter is often
-  repo-local (.venv/bin/python, ./gradlew, node_modules/.bin/*), and
-  the screen's bare-name rule forced either a bash -c wrapper (which
-  launders the path past the screen) or the broadest interpreter entry.
-  Now an acceptance oracle's program may be a path IFF it exactly
-  equals a committed .truth/accept-allow entry, is repo-relative (no
-  leading /), and has no `..` segment -- an allowlisted exact path is
-  the opposite of arbitrary, and STRONGER than an interpreter bare-name
-  (it bounds which executable runs, not which language). The evidence
-  screen (ADR-009) keeps its unconditional path refusal: recheck is a
-  different trust seam and read-only stays the rule there. Canary
-  FAULT AC8.
-
-v0.7.1 (issue #5, wk-bd379821): `impact --inverse` -- the backward
-  trace (ISO/IEC/IEEE 24765 bidirectional traceability). Forward impact
-  answers "what knowledge does editing these paths endanger?"; inverse
-  answers "which tracked files does the ledger know nothing about?" --
-  the question a curation-only ledger cannot ask itself (field audit:
-  8 of 9 sampled modules untraced, invisible by construction). Joins
-  `git ls-files` against the union of evidence_paths globs of ACTIVE
-  claims -- every status except retracted: a stale claim still names
-  its paths (it needs re-verification, the file is not dark); only
-  retraction kills the watch. Same match_paths matcher as the scan and
-  forward impact (ADR-005: a second matcher implementation is
-  forbidden). Read-only, no fold change, no new record kind. Scoping:
-  --under <dir> plus repeatable --exclude <prefix>; anything smarter
-  (inventories, verdict classes) is a downstream satellite's job. Exit
-  0 when the scope is fully watched / 4 when dark files exist --
-  distinct from forward impact's 3 so satellites can gate on each
-  separately. Canary FAULTS W5-W8.
-
-v0.7.0 (ADR-014, wk-eb59c649, upstream issues #1+#2): acceptance oracles.
-  `truth issue --accept-cmd <cmd> [--accept-kind verification|validation]`
-  stores an executable finish line on the issue record at birth (the
-  author commits to it BEFORE doing the work, like scope_basis); `truth
-  done` executes it from the repo root and refuses the close on non-zero
-  exit -- "done" stops being the agent's word. Acceptance commands
-  execute repository code BY PURPOSE (pytest, exercise runners), so they
-  are screened against their own committed allowlist,
-  .truth/accept-allow, never ADR-009's read-only evidence-allow --
-  reusing that list would force an unsafe override on every real oracle,
-  teaching the bypass. Same structural screen (bare allowlisted names
-  per pipeline segment, no command substitution, no path-form programs),
-  fail-closed when the allowlist is absent, re-screened at done time
-  against the CURRENT allowlist. --accept-unsafe-ok at filing stamps
-  accept.screened=false; at done it closes WITHOUT executing an oracle
-  that CANNOT run (unscreened/unscreenable), stamped executed=false on
-  the event -- it never overrides an oracle that ran and failed.
-  --cancel and --reopen skip the oracle (killing failed work must not
-  require its finish line to pass). The two kinds keep 12207's two V's
-  distinct: verification = suite/gate ("built right"), validation =
-  golden-diff ("built the right thing"). Fold impact: none -- acceptance
-  is a gate at close, never a stored status. Canary FAULTS AC1-AC7.
-
-v0.6.4 (ADR-013, wk-8d966a5b): premise supersede -- `truth premise
-  <issue> <new-tr> --supersedes <old-tr>` appends an auditable redirect
-  the ready/impact folds honor, releasing work HELD by a premise that
-  died and was corrected under a new id (second-deployment finding:
-  before this, the only exit was cancel-and-refile, breaking every
-  reference to the old wk- id). Fold half is permissive and confluent
-  (last-wins per (issue, old) in (ts, id) order, applied AFTER
-  merge_premises so premise-at-birth links redirect too; chains follow
-  to a fixed point, cycles stop at first repeat). Intake half is
-  strict: replacement claim must exist, old must currently be a
-  premise of the issue, and a live/unverified premise is refused
-  (it passes ready as-is -- supersede is for dead premises). The
-  redirect RE-TARGETS ADR-001 validity, never bypasses it: the
-  replacement claim is judged by the same matrix. Canary R10.
-
-v0.6.3 (wk-968bc087): `doctor` warns when the ledger holds work-kernel
-  issue records but no discovery file names `truth ready` -- G2's
-  invisibility failure, work-kernel edition, found when this template's
-  own meta-repo documented the fact verbs but not the work verbs (the
-  claim guarding against a recurrence is tr-f8d1d042 in that ledger).
-  WARN, not FAIL: a facts-only ledger is legitimate; facts plus
-  invisible work is not. Canary TL-2.
-
-v0.6.2 (review findings F1-F5, independent Fable review of v0.6.0/v0.6.1):
-  * F1 ADR-009: the evidence screen was bare-name only, so allowlisted
-    programs with their own exec/write flags passed (find -exec, sort
-    -o, git -c <k>=!cmd). PROGRAM_ARG_DENY screens those flags per
-    program; git leaves the shipped default allowlist entirely (its exec
-    surface is unbounded). Canary FAULT E5.
-  * F2 ADR-008: order_check compared parsed timestamps and abstained
-    on tz-naive/unparseable ts, but fold() sorts on the raw ts STRING --
-    so a backdated duplicate with a naive or junk ts substituted content
-    with validate green. order_check now compares the same string fold
-    sorts on, closing the attack directly. Canary FAULTS B3, B4.
-    (F5, a redundant validate-layer non-ISO-ts reject, is deferred: it
-    would need the JSON-schema mirror's format:date-time enforced in
-    lockstep or the FS-2 agreement generator flags drift -- a separate
-    coordinated change, and F2 already closes the hole.)
-  * F3 ADR-007: scope-signal narrowed vs the proposals doc -- added -t
-    (ripgrep type filter) and glob-metacharacter positionals to the
-    detector, and everywhere/always/each to the quantifier lexicon. A
-    bare tracked-subdir name (no slash/glob) still evades: resolving it
-    needs a git oracle the pure core has no access to (documented
-    residual). Canary FAULTS Q5, Q6.
-
-v0.6.0 (solo-regime hardening; docs/hardening-proposals-solo-regime.md):
-  * ADR-007 quantifier-scope gate: intake refuses a universally
-    quantified claim text backed by a scoped evidence command (the exact
-    shape of both pilot divergences, paper section 2) unless
-    --scope-ok "<why the scope covers the quantifier>" is given; the
-    sentence is stored as payload scope_basis, attackable by verifiers.
-  * ADR-008 order coherence: `validate` fails on a duplicate-id record
-    whose ts sorts before the record it duplicates (the backdated
-    substitution the fold accepts, paper section 1) and warns on clock
-    regression beyond TRUTH-skew tolerance. File order is append order
-    (INV-A), so backdating is visible; the commit gate now blocks it.
-  * ADR-009 evidence screen: evidence commands are screened against
-    .truth/evidence-allow at intake AND recheck (deferred execution in a
-    verifier session is the threat). --evidence-unsafe-ok files anyway
-    with evidence.screened=false, but recheck never executes an
-    unscreened command. Missing allowlist fails closed for VERIFIED.
-  * ADR-010 session separation: `verdict <id> agree` from the claim's
-    own session is refused (self-verification); diverge/cannot_verify
-    from the author stay allowed (self-incrimination runs against
-    interest). Override: TRUTH_SELF_VERDICT=1 (self-attested, F4 class).
-  * ADR-011 tombstones need a terminal: retraction and cancel require
-    TRUTH_HUMAN=1 plus either an interactive typed-id confirmation or
-    TRUTH_HUMAN_ACK=<exact-id> for headless human use. Refusal messages
-    no longer teach the bypass ritual.
-  * ADR-012 divergence subtype: `verdict <id> diverge --mechanical`
-    records that the recipe changed rather than reality; fold and
-    status unchanged, queue and stats display it.
-  * FS-1 `truth stats`: status/tier/class counts, verdict rates, claim
-    half-life per tier (live->stale), queue aging; intake prints the
-    observed median half-life beside an author-chosen --ttl-days once
-    >=5 observations exist for the tier (suggestion only, never set).
-  * FS-3 gate only: `doctor` measures fold latency and warns above
-    200ms (the trigger for the snapshot cache; unimplemented until it
-    fires, per the growth-gate discipline).
-
-v0.5.7 (ADR-005 trial, impact verb): `truth impact <path>...` -- the
-  pre-edit whisper's template half. Pure fold query, read-only: for each
-  repo-root-relative path, the live/unverified claims whose
-  evidence_paths watch it (the SAME matcher invalidate-scan uses; a
-  second matcher implementation is forbidden, ADR-005) and the
-  open/claimed work premised on those claims; external premise-linked
-  issue ids are listed unconditionally (their status lives
-  tracker-side). Exit 0 silent / 3 watched; --json for harnesses.
-  Output predicts what the machinery will do (STALES / HOLDs); the verb
-  files nothing. Canary FAULTS W1-W4. The hook half (deny list,
-  PreToolUse wiring, per-session dedup) is consumer-side per ADR-003
-  rule 2; the trial venue is this template repo's own ledger (ADR-005
-  status block, amended 2026-07-10).
-
-v0.5.6 (review residuals): CSV parsing for --paths and --deps drops
-  empty entries (a trailing comma used to surface as a refusal of the
-  literal '' -- fails-closed but cryptic); the INV-M zero-match refusal
-  now also names --ttl-days as the escape for facts about files git
-  does not track; fold_issues' first-wins rule gains permutation
-  confluence coverage matching the claims fold's.
-
-v0.5.5 (audit parity): `validate` now rejects claim records with no
-  `text` -- the stdlib mirror had drifted from claims.schema.json's
-  required/minLength-1 rule (F1's defect class, caught by a fresh
-  audit; the shared conformance corpus had no missing-text fixture).
-  Intake refuses empty claim text for the same reason: `truth claim ""`
-  used to file a record the schema rejects, which the INV-B commit gate
-  would then block -- a CLI that contradicts its own gate. Canary FAULT
-  S4 gates spec-health's issues-side degradation path (ADR-003 birth
-  law: no satellite path exists ungated, including the graceful ones).
-
-v0.5.4 (INV-M, dead-tripwire intake checks): `truth claim` and
-  `done --claim` now refuse two shapes of evidence_path that can never
-  invalidate anything -- a whitespace-containing entry with no comma
-  (`--paths "a.sh b.sh"` silently storing as one nonexistent literal;
-  found by inspection in the pilot ledger, tr-3591aae0) and any literal
-  (non-glob) path matching zero files git currently tracks. Explicit
-  globs (`*`/`?`) are exempt from the second check -- watching a pattern
-  that's empty for now is legitimate intent, a bare typo'd literal is
-  not. Applies to any evidence_class carrying paths, not only VERIFIED,
-  since invalidation itself doesn't discriminate by class either.
-
-v0.5.3 (ADR-006, issue-fold hardening): duplicate issue ids are now
-  FIRST-WINS in fold_issues, matching fold()'s claim handling. v0.5's
-  original last-wins choice described a verb the CLI never implements
-  (`truth issue` always mints a fresh id from hash(payload, ts, actor);
-  no command re-files an existing wk- id), so it was pure attack surface:
-  an appended duplicate carrying `premises: []` silently stripped an
-  issue's ADR-001 protection, needing no backdating and no terminal-state
-  coincidence -- unlike the analogous claims-side gap (paper §8 item 6),
-  which needs both. Closes it the way F6 closed it for claims.
-
-v0.5 (ADR-002, work kernel): issues live in the same ledger as claims.
-  Two new record kinds -- `issue` (wk- envelope id; payload title/text/
-  deps/premises) and `issue_event` (claimed|released|closed|reopened|
-  cancelled) -- folded in the same confluent (ts, id) order. Status is
-  derived, never stored. `closed` is NOT terminal (work is cyclical);
-  `cancelled` IS terminal and requires TRUTH_HUMAN=1 (G12 symmetry).
-  Verbs: issue / start / done / issues. `done --claim` files the
-  completion fact and the closing event atomically (claim-at-death);
-  `issue --premise` links at creation (premise-at-birth; zero premises
-  warns). `ready` source precedence: --stdin, TRUTH_TRACKER_CMD, native
-  (when issue records exist), then `bd ready --json`. `issues
-  --ready-json` emits the E1 adapter contract, so the kernel is itself a
-  tracker source and the seam and kernel can never disagree. The ADR-002
-  refusal list is binding: no assignees, priorities, dates, labels,
-  hierarchy, comments, or compaction without a superseding ADR.
-
-v0.4.1 (tracker adapter seam): `ready` no longer hardcodes Beads.
-  Sources: --stdin pipe | TRUTH_TRACKER_CMD | default `bd ready --json`.
-  Contract: a JSON array of issue objects with `id` (+ `title`).
-  Missing/failing tracker degrades with guidance (previously: raw
-  FileNotFoundError traceback, contradicting the "fails loudly with
-  fallback" doc). Canary FAULT J now gates all three sources.
-
-v0.4 (audit-driven; SEMANTIC changes, canary extended to 19 checks):
-  * fold is CONFLUENT: (ts, id) total order replaces file order, so
-    union-merged branches derive identical status either direction.
-  * duplicate claim ids ignored (first wins): closes the tombstone-
-    resurrection pure-append attack on INV-G.
-  * `agree` verdicts re-anchor path-anchored claims: re-verified claims
-    stay live across scans instead of re-staling on the frozen anchor.
-  * retraction requires TRUTH_HUMAN=1: "humans only" is now a property,
-    not a convention addressed to well-behaved verifiers.
-  * evidence-path globs: `*`/`?` no longer cross `/` (use `**` to span).
-  * claims.schema.json fixed to match behavior: verdict enum includes
-    `retracted`; VERIFIED accepts paths OR ttl_days (anyOf).
-
-
-Same behavior and CLI contract as v0.2 (all 14 canary checks must stay
-green); internals reorganized as FUNCTIONAL CORE / IMPERATIVE SHELL:
-
-  PURE CORE        decisions and derivations -- plain data in, plain data
-                   out. No subprocess, no filesystem, no clock, no env.
-                   Unit-tested in milliseconds by scripts/test-truth-core.py.
-  IMPERATIVE SHELL git, files, evidence execution, argparse, printing.
-                   Gathers facts, calls the core, applies effects.
-                   Acceptance-tested by scripts/truth-canary.sh.
-
-Open/closed seam: invalidation triggers live in the INVALIDATORS list --
-adding a trigger (e.g. future attestation) is appending a pure function,
-not editing the scan. Time is a parameter everywhere in the core; the
-TRUTH_NOW test hook is honored only at the shell boundary (now_dt).
-
-Event kinds, fold semantics, invariants, and gap fixes (G1 G6 G8 G10 G12
-G13 G14 G15, ADR-001) are unchanged from v0.2 -- see .truth/README.md.
-v0.3 also strengthens `validate` to match the JSON Schema on three points
-the v0.2 mirror missed (INFERRED requires basis; id patterns on envelope
-and payload references), caught by the schema-conformance test.
+Full version history: CHANGELOG.md (extracted from this docstring at
+v0.9.13, roadmap-v3 R5). Line 2 above keeps the version self-statement
+the ADR-026 lockstep test parses and pins all other surfaces to.
 
 Stdlib only. Python 3.9+. POSIX (G5: documented limit).
 """
@@ -459,6 +44,15 @@ STATUSES = ("unverified", "live", "stale", "diverged", "cannot_verify",
             "retracted", "disputed")
 ISSUE_EVENTS = ("claimed", "released", "closed", "reopened", "cancelled")
 ISSUE_STATUSES = ("open", "claimed", "closed", "cancelled")
+# R2 (roadmap-v3): the verbs that append to the ledger -- exactly the set
+# whose records the ADR-025 commit gate would screen, so exactly the set
+# that warns when that gate is unwired. Read verbs (list, queue, ready,
+# stats, impact, dispatch, validate, doctor, issues, baseline) stay
+# silent; `validate --stdin` especially MUST stay exempt -- it runs
+# inside the commit gate itself.
+WRITE_VERBS = frozenset(("claim", "verdict", "invalidate-scan", "premise",
+                         "contradicts", "issue", "start", "done",
+                         "reaffirm"))  # R3: reaffirm appends agree verdicts
 DISCOVERY_FILES = ("AGENTS.md", "CLAUDE.md", ".cursorrules",
                    ".github/copilot-instructions.md")
 # ADR-025: CI config files/dirs doctor greps for the commit-gate script
@@ -477,6 +71,12 @@ CI_GATE_FILES = (".gitlab-ci.yml", ".circleci/config.yml",
 CI_GATE_DIRS = (".github/workflows", ".woodpecker")
 DUPLICATE_THRESHOLD = 0.6
 QUEUE_AGE_WARN_DAYS = 14
+# ADR-032: a --scope-ok override (ADR-007) filed without an explicit
+# --ttl-days is stamped this default shelf life, so the scope judgment is
+# mechanically re-asked when it lapses (expiry rides the unchanged ADR-019
+# scan path -> ADR-030 arm 1 routes it to re-file -> ADR-007 re-fires).
+# Changed only with ADR-032's adoption gate.
+DEFAULT_OVERRIDE_TTL_DAYS = 30
 ID_RE = re.compile(r"^tr-[0-9a-f]{8}$")
 WK_ID_RE = re.compile(r"^wk-[0-9a-f]{8}$")
 # ADR-015: the canonical ts profile -- fixed-width UTC microseconds,
@@ -486,6 +86,19 @@ WK_ID_RE = re.compile(r"^wk-[0-9a-f]{8}$")
 # Enforced in validate_events in lockstep with the schema's pattern
 # (FS-2 corpus holds the two together).
 TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+00:00$")
+# ISO/IEC/IEEE 42010 'concern': TRIAGE METADATA ONLY. Concern tags are
+# short slugs stamped on a claim payload at filing (--concern, repeatable,
+# stored sorted+deduplicated) and read back by list/stats. The slug check
+# is input hygiene like INV-M's path hygiene, NOT a concern-gate: deciding
+# whether a claim "touches security" needs a model, and the moment a gate
+# needs a model to fire, it is a review, not a refusal. Tags never block
+# filing, never enter the fold, never affect derived status or ready.
+# Anchored \A..\Z, not ^..$: Python's $ also matches BEFORE a trailing
+# newline, so ^..$ would let 'security\n' through intake into a stored
+# tag that breaks the one-line stats render and that list --concern can
+# never name (red-team F1). The schema's pattern carries the equivalent
+# guard in ECMA-compatible form.
+CONCERN_RE = re.compile(r"\A[a-z0-9-]{1,32}\Z")
 # ADR-007: universal-quantifier lexicon (tokens matched word-level via
 # tokens(); phrases matched with word boundaries). Changed only together
 # with the Q-canary faults.
@@ -580,9 +193,9 @@ def fold_key(ne):
     including the two file orders a union merge can produce -- folds to
     one state. Byte-identical records (git's union-merge duplicate, B2)
     tie on all three keys and coincide, so which wins is immaterial.
-    order_check (a gate, not the fold) separately refuses a NON-identical
-    equal-ts duplicate id, so an attacker cannot use this key to pick a
-    substitution winner in a committed ledger."""
+    order_check (a gate, not the fold) separately refuses ANY
+    non-identical duplicate id (ADR-031), so an attacker cannot use this
+    key to pick a substitution winner in a committed ledger."""
     ev = ne[1]
     return (ev.get("ts") or "", ev.get("id") or "", canon(ev))
 
@@ -955,6 +568,40 @@ def determinism_error(run1, run2):
                 "false-divergence risk explicitly with --single-run.")
     return None
 
+def evidence_exit_warning(evidence_class, returncode):
+    """field-notes-batch-m item 2 remedy: `claim --class VERIFIED` files
+    on *determinism* (the G6 double-run hash-matches), not on exit 0, so
+    a stably-failing probe files clean and "rechecks" forever by stable
+    failure -- a hollow VERIFIED, an INV-M dead tripwire one level up
+    (two real instances caught by a verifier, never by filing).
+    Non-blocking by design: a non-zero-but-stable probe can be a
+    legitimate fact to record, so this returns a warning line (or None)
+    for the shell to print on stderr AFTER the successful append --
+    never a refusal, and the filing's exit code is untouched."""
+    if evidence_class != "VERIFIED" or not returncode:
+        return None
+    return (f"truth: warning: evidence command exited {returncode} -- a "
+            "VERIFIED claim usually demonstrates its fact with a passing "
+            "command; a stably-failing probe verifies nothing (consider "
+            "`... && echo OK` or a positive assertion)")
+
+def commit_gate_banner(verb, gate_wired):
+    """R2 (roadmap-v3): ADR-025 made the commit gate decidable, but only
+    `doctor` looked -- an unwired clone ran every verb silently ungated.
+    Given the verb and the shell-gathered wiring fact, returns the loud
+    banner (or None): write verbs only (a read verb changes nothing the
+    gate screens, and `validate --stdin` runs inside the gate itself).
+    Fail-open with noise -- the shell prints this to stderr and proceeds;
+    it never refuses and never changes an exit code."""
+    if gate_wired or verb not in WRITE_VERBS:
+        return None
+    return ("truth: WARNING -- no commit gate is wired (no active "
+            "check-truth hook, no CI config naming it).\n"
+            "  INV-A/INV-B and the ADR-008/016 detections are NOT "
+            "enforced on commits in this clone.\n"
+            "  Run `scripts/truth doctor` for the wiring check (ADR-025). "
+            "This message does not block.")
+
 def quantifier_scope_conflict(text, evidence_cmd):
     """ADR-007: a universally quantified sentence over a scoped command
     is the exact shape of both pilot divergences -- a repo-wide clause
@@ -991,6 +638,36 @@ def quantifier_scope_conflict(text, evidence_cmd):
     if s is None:
         return None
     return (q, s)
+
+def override_decay(scope_basis, ttl_days):
+    """ADR-032: a --scope-ok override (scope_basis, ADR-007) filed WITHOUT
+    an explicit --ttl-days decays -- it is stamped a default shelf life so
+    the scope judgment cannot rot silently: when the default TTL lapses the
+    unchanged ADR-019 scan materializes the expiry, ADR-030 arm 1 routes
+    the stale claim to re-file, and re-filing re-fires the ADR-007 gate,
+    mechanically re-asking whether the scope judgment was ever real.
+
+    Returns (ttl_days, ttl_default_flag, notice_or_None):
+      * scope_basis present AND ttl_days is None -> (DEFAULT_OVERRIDE_TTL_
+        DAYS, True, a one-line stderr notice explaining the default and how
+        to opt out);
+      * an explicit ttl_days -> (ttl_days, False, None) -- the visible
+        opt-out (a large --ttl-days is the deliberate long life), unchanged
+        even when a scope_basis is present;
+      * no scope_basis -> (ttl_days, False, None), unchanged.
+
+    Pure -- reads no clock; the expiry itself is counted from the claim's
+    ts by the scan (ADR-019), never here. Deliberately no decay for
+    screened:false claims and no --no-ttl flag: an explicit large
+    --ttl-days is the visible opt-out (ADR-032 exclusions)."""
+    if scope_basis and ttl_days is None:
+        return (DEFAULT_OVERRIDE_TTL_DAYS, True,
+                "note: --scope-ok override filed with no --ttl-days -- "
+                f"stamped a default {DEFAULT_OVERRIDE_TTL_DAYS}-day expiry "
+                "(ADR-032) so the scope judgment is re-asked when it "
+                "lapses. Pass an explicit --ttl-days (a large value is the "
+                "visible opt-out) to choose a different shelf life.")
+    return (ttl_days, False, None)
 
 _SCREEN_SEPARATORS = frozenset((";", "|", "||", "&&", "&"))
 _SCREEN_PUNCT = frozenset("();<>|&")
@@ -1146,16 +823,19 @@ def screen_accept_command(cmd, allowlist):
         allow_paths=True)
 
 def order_check(events):
-    """ADR-008: within one repository's history, file order is append
-    order (INV-A prefix gate), so a backdated duplicate id is *visible*:
-    it appears later in the file than the record it sorts before.
-    Returns (errors, warnings). Errors: duplicate id with strictly
-    earlier ts (the backdated substitution attack, ADR-008); duplicate
-    id with an EQUAL ts but non-identical content (the equal-ts
-    substitution forgery, ADR-016/C1 -- a copied timestamp ties the
-    fold's (ts, id) order, so file order alone would pick the winner and
-    two union-merge directions could disagree). A byte-identical line
-    duplicated by union merge shares id and ts legitimately and passes.
+    """ADR-031 (unifying ADR-008/ADR-016's detection halves): within one
+    repository's history, file order is append order (INV-A prefix
+    gate), so every duplicate id is *visible* -- both lines are in the
+    file. Returns (errors, warnings). Error: ANY duplicate id whose
+    canonical content differs from the first-seen record, regardless of
+    ts relation. Corrections file under fresh ids by design, so a
+    content-distinct duplicate id has no legitimate use: backdated
+    (ADR-008) and equal-ts (ADR-016) duplicates were substitution
+    forgeries, and the later-ts duplicate formerly accepted -- harmless
+    to the first-wins fold -- was pure confusion attack surface serving
+    nothing. Only the byte-identical line duplicated by git union merge
+    legitimately shares an id and passes. The fold's (ts, id, canon)
+    total order and the ADR-015 clock-push are UNTOUCHED by this gate.
     Warnings only for clock regression beyond tolerance -- a branch
     ledger union-merged into main legitimately places older records
     after newer ones, and failing there would punish the exact merge
@@ -1185,33 +865,23 @@ def order_check(events):
         ts = parse_ts(ts_raw)
         if eid in first_seen:
             f_ts_raw, f_line, f_canon = first_seen[eid]
-            # fold() orders by the raw ts STRING then id (a duplicate id
-            # ties on id, so the ts string alone decides the winner). Test
-            # substitution exactly as fold sorts -- string-comparing, not
-            # parsing -- so a tz-naive or non-ISO forged ts cannot slip
-            # past a parsed comparison the way it did before v0.6.2 (F2).
-            if ts_raw < f_ts_raw:
+            # ADR-031: content-distinct duplicate ids are refused
+            # WHATEVER the ts relation. canon() equality is the
+            # byte-identity test the union-merge shape passes; the
+            # comparison never parses a ts, so no forged-ts shape
+            # (tz-naive, junk, copied, future) can route around it (the
+            # F2 lesson, kept). Subsumes ADR-008 (backdated: ts_raw <
+            # f_ts_raw) and ADR-016/C1 (equal-ts: ts_raw == f_ts_raw);
+            # newly refuses the later-ts distinct duplicate that
+            # first-wins folding rendered harmless but nothing
+            # legitimate ever produces.
+            if canon(ev) != f_canon:
                 errors.append(
-                    f"line {n}: duplicate id {eid} with ts sorting before "
-                    f"line {f_line}'s -- canonical-order substitution "
-                    "(ADR-008): a later append may not sort before the "
-                    "record it duplicates")
-            # ADR-016 (C1): an EQUAL ts no longer passes on the ts test
-            # alone. Equal ts + duplicate id is legal ONLY for the git
-            # union-merge shape -- a byte-identical line. A duplicate id
-            # carrying a COPIED ts but different content is the equal-ts
-            # substitution forgery: it ties (ts, id) with the genuine
-            # record, so file order alone would decide the winner, and
-            # two union-merge directions can seat the tie both ways
-            # (non-confluence, INV-I). Refuse it; canon() equality is the
-            # byte-identity test the union-merge shape passes.
-            elif ts_raw == f_ts_raw and canon(ev) != f_canon:
-                errors.append(
-                    f"line {n}: duplicate id {eid} with an EQUAL ts but "
-                    f"different content from line {f_line} -- equal-ts "
-                    "substitution (ADR-016): a copied timestamp ties the "
-                    "fold's order, so only a byte-identical union-merge "
-                    "duplicate may share both id and ts")
+                    f"line {n}: duplicate id {eid} with content differing "
+                    f"from line {f_line}'s -- duplicate-id substitution "
+                    "(ADR-031): corrections file under fresh ids, so only "
+                    "a byte-identical union-merge duplicate may share an "
+                    "id")
         elif eid:
             first_seen[eid] = (ts_raw, n, canon(ev))
         if ev.get("kind") == "issue_event":
@@ -1263,7 +933,23 @@ def half_life_observations(events):
             if not new:
                 continue
             ts = parse_ts(ev.get("ts") or "")
-            if e["status"] == "live" and new == "stale" \
+            # FS-1/ADR-032: a TTL expiry is administratively caused (the
+            # ttl_days value itself, defaulted to 30 by ADR-032), not
+            # observed drift, so it must NOT feed the half-life medians --
+            # otherwise defaulted overrides industrialize observations that
+            # cluster at the default and ttl_suggestion becomes circular
+            # (suggests ~= the default that caused the data). Cut here, at
+            # the single source of the tier streams both stats_report's
+            # medians and ttl_suggestion read, so the exclusion covers both.
+            # Prefer the v0.9.12+ structured `reason_code == "ttl"` stamp;
+            # fall back to is_ttl_reason's prefix (the SAME two-arm rule as
+            # ttl_staleness, reused not re-implemented) for pre-stamp
+            # records. The claim still transitions to stale -- fold stays
+            # authoritative on status, only the observation is withheld;
+            # TTL expiries are counted in override_report's decay_expiries.
+            is_ttl = kind == "invalidation" and (
+                p.get("reason_code") == "ttl" or is_ttl_reason(p.get("reason")))
+            if e["status"] == "live" and new == "stale" and not is_ttl \
                     and e["since"] and ts \
                     and (ts.tzinfo is None) == (e["since"].tzinfo is None):
                 obs.append((e["tier"],
@@ -1271,6 +957,17 @@ def half_life_observations(events):
             e["status"] = new
             e["since"] = ts if new == "live" else None
     return obs, {cid: e["status"] for cid, e in state.items()}
+
+def claim_concerns(payload):
+    """The claim's 42010 concern tags as READ-side data: the string items
+    of a well-formed list, else []. A hand-appended malformed value is
+    validate's finding to report; the read verbs (list --concern, stats)
+    must degrade to 'no tags', never crash on an unhashable item or fall
+    into substring matching on a bare string (red-team F2). Pure."""
+    cs = payload.get("concerns")
+    if not isinstance(cs, list):
+        return []
+    return [t for t in cs if isinstance(t, str)]
 
 def stats_report(events, now):
     """FS-1: everything the monthly hand-audit (paper section 8 item 2)
@@ -1304,10 +1001,101 @@ def stats_report(events, now):
                                "median_days": round(statistics.median(days), 2)}
     queue = queue_rows(claims, now)
     ages = sorted(r["age_days"] for r in queue if r["age_days"] is not None)
+    # 42010 concern triage view: tag counts over non-retracted claims
+    # (stale/diverged still carry their stakeholder's interest -- only
+    # retraction kills it, the impact --inverse convention), plus how many
+    # ACTIVE claims ({live, unverified}, the ADR-018 intake notion) carry
+    # no tag at all -- the coverage residue a triager would sweep. Pure
+    # fold read; concerns never feed status, queue, or any gate.
+    concerns, untagged = {}, 0
+    for e in claims.values():
+        tags = claim_concerns(e["claim"]["payload"])
+        if e["status"] != "retracted":
+            for t in tags:
+                concerns[t] = concerns.get(t, 0) + 1
+        if e["status"] in ("live", "unverified") and not tags:
+            untagged += 1
     return {"claims_by_status": by_status, "claims_by_tier": by_tier,
             "verdicts": verdicts, "half_life": half_life,
             "queue_size": len(queue),
-            "queue_max_age_days": ages[-1] if ages else None}
+            "queue_max_age_days": ages[-1] if ages else None,
+            "concerns": concerns, "concerns_untagged_active": untagged}
+
+# ADR-033: 'dead' for the override-velocity repeat detector. A claim has
+# no 'superseded' status in this system (supersede is premise-scoped,
+# ADR-013), so the dead set is exactly the three terminal-for-now claim
+# statuses the fold produces below live/unverified.
+DEAD_CLAIM_STATUSES = frozenset(("stale", "diverged", "retracted"))
+
+def override_report(events, now):
+    """ADR-033: the override-velocity instrument that supplies ADR-007's
+    adoption gate its data. A pure fold consumer beside stats_report,
+    counting over the given events (the shell applies any --since window
+    before calling -- stats_report's overall-count convention, no
+    per-window split of its own). Returns a dict:
+      * scope_basis_filings -- ADR-007 --scope-ok overrides;
+      * decay_expiries -- ADR-032 override-decay invalidations
+        (reason_code=='ttl' on a ttl_default claim);
+      * overridden_duplicates -- G8/--duplicate-ok filings;
+      * screened_false_filings -- --evidence-unsafe-ok filings;
+      * max_scope_ttl_days -- the largest ttl among scope_basis claims
+        (None if none), so an operator can see the visible opt-out in use;
+      * repeats -- verbatim re-justification after expiry: a scope_basis
+        claim whose tokens() token set EQUALS that of an EARLIER claim now
+        DEAD (stale/diverged/retracted). A prior claim still live/unverified
+        is NOT flagged (that is ADR-018 near-duplicate territory). tokens()
+        is REUSED, never re-implemented -- the ADR-018/021 parity lesson.
+    Pure: no clock read (now is unused -- expiries are read from records,
+    not recomputed; kept for signature parity with stats_report)."""
+    del now  # signature parity; the report reads records, not the clock
+    claims, _ = fold(events)
+    scope_filings = overridden_dupes = screened_false = 0
+    max_scope_ttl = None
+    for e in claims.values():
+        p = e["claim"]["payload"]
+        if p.get("scope_basis"):
+            scope_filings += 1
+            t = p.get("ttl_days")
+            if isinstance(t, int) and not isinstance(t, bool):
+                max_scope_ttl = t if max_scope_ttl is None \
+                    else max(max_scope_ttl, t)
+        if p.get("overridden_duplicates"):
+            overridden_dupes += 1
+        if (p.get("evidence") or {}).get("screened") is False:
+            screened_false += 1
+    decay_expiries = 0
+    for _, ev in events:
+        if ev.get("kind") != "invalidation":
+            continue
+        p = ev.get("payload") or {}
+        if p.get("reason_code") != "ttl":
+            continue
+        c = claims.get(p.get("claim"))
+        if c and c["claim"]["payload"].get("ttl_default"):
+            decay_expiries += 1
+    # verbatim-repeat: walk claims in fold (ts, id) order, flagging a
+    # scope_basis claim whose token set matches an EARLIER dead one.
+    ordered = sorted(claims.values(),
+                     key=lambda e: (e["claim"].get("ts") or "",
+                                    e["claim"].get("id") or ""))
+    repeats, seen = [], []
+    for e in ordered:
+        sb = e["claim"]["payload"].get("scope_basis")
+        if not sb:
+            continue
+        toks, cid = frozenset(tokens(sb)), e["claim"].get("id")
+        for ptoks, pcid, pstatus in seen:
+            if ptoks == toks and pstatus in DEAD_CLAIM_STATUSES:
+                repeats.append({"claim": cid, "prior": pcid,
+                                "prior_status": pstatus})
+                break
+        seen.append((toks, cid, e["status"]))
+    return {"scope_basis_filings": scope_filings,
+            "decay_expiries": decay_expiries,
+            "overridden_duplicates": overridden_dupes,
+            "screened_false_filings": screened_false,
+            "max_scope_ttl_days": max_scope_ttl,
+            "repeats": repeats}
 
 def ttl_suggestion(observations, tier):
     """FS-1: observed median half-life for the tier, or None below the
@@ -1332,6 +1120,141 @@ def recheck_verdict(evidence, digest, returncode):
 NO_EVIDENCE_VERDICT = ("cannot_verify",
                        "recheck requested but claim carries no evidence command")
 
+# ------------------------------------------ reaffirm triage (R3, ADR-030)
+
+REAFFIRM_BASIS = "reaffirm: hash-match, no judgment re-run"
+REAFFIRM_ARMS = ("ttl", "manual", "same_session", "match", "mismatch")
+
+def latest_invalidation_reason(events, cid):
+    """The reason of the claim's LATEST invalidation record, latest by
+    fold_key (the ADR-016 total order), never by file position -- the
+    triage must key off the same order the fold's status does. ADR-019:
+    TTL expiry is materialized by the scan as an invalidation record and
+    the fold reads no clock, so TTL-staleness is a property of this
+    record's reason, not something reaffirm may recompute. Returns the
+    reason string, or None when no invalidation names the claim."""
+    best_key, reason = None, None
+    for ne in events:
+        ev = ne[1]
+        p = ev.get("payload") or {}
+        if ev.get("kind") != "invalidation" or p.get("claim") != cid:
+            continue
+        k = fold_key(ne)
+        if best_key is None or k > best_key:
+            best_key, reason = k, p.get("reason")
+    return reason
+
+def is_ttl_reason(reason):
+    """ADR-019/030: does an invalidation reason mean TTL expiry? Matches
+    what _ttl_expired writes ('ttl expired (N days)') by prefix, so the
+    check and the writer cannot drift on the parenthetical. FALLBACK
+    ONLY since the scan started stamping reason_code (v0.9.12 red-team
+    F3): ttl_staleness prefers the structured code and consults this
+    prefix just for records that predate the stamp."""
+    return bool(reason) and reason.startswith("ttl expired")
+
+def ttl_staleness(events, cid):
+    """Red-team F3 hardening: is the claim TTL-staled, for triage arm 1?
+    Prefers the structured `reason_code: "ttl"` the scan stamps on TTL
+    invalidations over free-text parsing. ADR-019 makes TTL expiry
+    MONOTONE -- the scan is the only clock reader, the clock never runs
+    backwards, and re-verification never resets the TTL -- so ANY
+    reason_code=="ttl" invalidation on the claim is durable proof of TTL
+    staleness: a LATER invalidation carrying a different free-text
+    reason (including a raw-appended forgery) can no longer flip the
+    claim out of the re-file arm and into auto-agree. Records that
+    predate the stamp have no reason_code, so the latest-reason prefix
+    match remains the fallback there; a raw append can still forge that
+    plain text -- the general forged-record residual ADR-030 accepts
+    (paper sec 8 item 6)."""
+    if any(ev.get("kind") == "invalidation"
+           and (ev.get("payload") or {}).get("claim") == cid
+           and ev["payload"].get("reason_code") == "ttl"
+           for _, ev in events):
+        return True
+    return is_ttl_reason(latest_invalidation_reason(events, cid))
+
+def previously_agreed(events, cid):
+    """ADR-030: has ANY agree verdict ever been filed for the claim?
+    Reaffirm re-confirms a verification that already happened; a stale
+    claim nobody ever agreed with has no verification to re-confirm --
+    auto-filing its FIRST agree would be a first verification without
+    judgment, exactly what `verdict --recheck` refuses to do."""
+    return any(ev.get("kind") == "verdict"
+               and (ev.get("payload") or {}).get("claim") == cid
+               and ev["payload"].get("verdict") == "agree"
+               for _, ev in events)
+
+def reaffirm_triage(entry, invalidation_reason, current_session, was_agreed,
+                    screen_err=None, recheck=None, ttl_staled=None):
+    """R3 / ADR-030: the ONE decision per stale claim -- which arm, and
+    what reaffirm does about it. Pure: the shell gathers the facts
+    (latest invalidation reason, sessions, current-allowlist screen
+    result, recheck outcome, and since the red-team F3 hardening the
+    structured `ttl_staled` fact from ttl_staleness -- when the shell
+    passes it, it overrides the free-text prefix fallback on
+    invalidation_reason) and applies the effects; nothing here reads
+    a clock, the env, or a file. Returns {"arm", "action"}; arm is one
+    of REAFFIRM_ARMS, or the "execute" sentinel telling the shell to run
+    the screened recheck and call again with its result. Arm order is
+    the R3 contract (TTL, then unexecutable, then session, then the
+    recheck outcome), so e.g. a TTL-staled unscreened claim reports the
+    TTL re-file path, its more fundamental disability.
+
+    Only a hash-match ever files, and only as `agree` (the one verdict a
+    matching hash mechanically supports, given a prior agree to
+    re-confirm). A MISMATCH files NOTHING -- not diverge either: whether
+    a changed hash is mechanical (recipe drift) or genuine (reality
+    moved) is ADR-012's judgment call, and a batch verb has no judge; it
+    reports the claim for the dispatch path instead."""
+    p = entry["claim"]["payload"]
+    ev = p.get("evidence") or {}
+    if (ttl_staled if ttl_staled is not None
+            else is_ttl_reason(invalidation_reason)):
+        return {"arm": "ttl",
+                "action": "skipped -- re-file required (ADR-019: TTL "
+                          "never resets by re-verification)"}
+    if ev.get("screened") is False:
+        # The recheck refusal discipline (ADR-009/029): screened=false is
+        # the author's own admission, final; the command NEVER executes.
+        return {"arm": "manual",
+                "action": "skipped -- filed with --evidence-unsafe-ok "
+                          "(evidence.screened=false): manual verification "
+                          "only (ADR-009)"}
+    if entry["claim"].get("session") == current_session:
+        return {"arm": "same_session",
+                "action": "skipped -- authored by this session; reaffirm "
+                          "must not self-agree (ADR-010): dispatch to a "
+                          "fresh session"}
+    if not ev.get("command"):
+        return {"arm": "manual",
+                "action": "skipped -- no evidence command recorded: "
+                          "manual verification only"}
+    if not was_agreed:
+        return {"arm": "manual",
+                "action": "skipped -- never agreed by any verifier: first "
+                          "verification is a judgment, not a "
+                          "re-confirmation; dispatch it (ADR-030)"}
+    if screen_err:
+        return {"arm": "manual",
+                "action": "skipped -- recheck will not execute this "
+                          f"evidence command ({screen_err}): manual "
+                          "verification only"}
+    if recheck is None:
+        return {"arm": "execute", "action": "run the screened recheck"}
+    verdict = recheck[0]
+    if verdict == "agree":
+        return {"arm": "match", "action": "hash-match -- " + REAFFIRM_BASIS}
+    if verdict == "cannot_verify":  # recheck_verdict's exit-127 rule
+        return {"arm": "manual",
+                "action": "skipped -- evidence command not found at "
+                          "recheck (exit 127): environment, not reality; "
+                          "manual verification only"}
+    return {"arm": "mismatch",
+            "action": "diverged evidence -- dispatch for judgment "
+                      "(nothing filed: mechanical-vs-genuine is ADR-012's "
+                      "call, never a batch verb's)"}
+
 # ------------------------------- invalidation strategies (OCP seam, G10/14)
 # Each strategy: (entry, facts, now) -> None, or
 #   {"payload": <fields merged into the invalidation record>,
@@ -1352,7 +1275,12 @@ def _ttl_expired(entry, facts, now):
     ttl = p.get("ttl_days")
     claim_ts = parse_ts(entry["claim"].get("ts") or "")
     if ttl and claim_ts and (now - claim_ts).total_seconds() > ttl * 86400:
-        return {"payload": {"reason": f"ttl expired ({ttl} days)"},
+        # reason_code (v0.9.12 red-team F3): the STRUCTURED twin of the
+        # human reason, so consumers (reaffirm's TTL arm) need not parse
+        # free text. Schema/mirror payloads are open; older records
+        # simply lack it and readers fall back to the reason prefix.
+        return {"payload": {"reason": f"ttl expired ({ttl} days)",
+                            "reason_code": "ttl"},
                 "label": "ttl expired"}
     return None
 
@@ -1631,6 +1559,13 @@ def validate_events(events):
             if "scope_basis" in p and not p["scope_basis"]:
                 errors.append(f"line {n}: empty scope_basis (ADR-007: the "
                               "override carries a sentence, not a boolean)")
+            # ADR-032: ttl_default marks a --scope-ok override that took the
+            # default 30-day expiry. Optional; a boolean when present. Two
+            # INDEPENDENT contract surfaces (this mirror + the schema), held
+            # in lockstep by the FS-2 corpus.
+            if "ttl_default" in p and not isinstance(p["ttl_default"], bool):
+                errors.append(f"line {n}: ttl_default must be a boolean "
+                              "(ADR-032: it flags a defaulted override TTL)")
             if "overridden_duplicates" in p:
                 od = p["overridden_duplicates"]
                 if (not isinstance(od, list) or not od
@@ -1639,6 +1574,25 @@ def validate_events(events):
                                   "non-empty list of tr-hex8 ids (MEDIUM-1: "
                                   "the --duplicate-ok trace records which "
                                   "active claims it declared distinct from)")
+            # 42010 concerns: optional triage metadata; when present, a
+            # non-empty duplicate-free list of slug strings. Two
+            # INDEPENDENT contract surfaces (this mirror + the schema's
+            # uniqueItems/pattern), held in lockstep by the FS-2 corpus.
+            # Shape hygiene only -- no tag value gates anything. The dup
+            # check runs only after every item proved a hashable string
+            # (`or` short-circuit): set() on a junk item must not raise.
+            if "concerns" in p:
+                cs = p["concerns"]
+                if (not isinstance(cs, list) or not cs
+                        or any(not isinstance(t, str)
+                               or not CONCERN_RE.match(t) for t in cs)
+                        or len(set(cs)) != len(cs)):
+                    errors.append(f"line {n}: concerns must be a non-empty "
+                                  "duplicate-free list of slug strings "
+                                  "([a-z0-9-]{1,32}) -- 42010 triage "
+                                  "metadata, shape-checked only (never a "
+                                  "concern-gate; a duplicate would double-"
+                                  "count in stats)")
             if "screened" in p.get("evidence", {}) \
                     and not isinstance(p["evidence"]["screened"], bool):
                 errors.append(f"line {n}: evidence.screened must be a "
@@ -1798,8 +1752,14 @@ def commit_reachable(sha):
     return r.returncode == 0
 
 def changed_files_since(anchor):
-    """Returns (changed_files or None, error or None)."""
-    r = subprocess.run(["git", "diff", "--name-only", f"{anchor}..HEAD"],
+    """Returns (changed_files or None, error or None).
+
+    --no-renames: with rename detection active, a `git mv` of a watched
+    file emits only the DESTINATION path, so the watched (old) path never
+    appears and the scan silently misses the change -- a rename must show
+    as delete+add so the tripwire fires on the old path."""
+    r = subprocess.run(["git", "diff", "--name-only", "--no-renames",
+                        f"{anchor}..HEAD"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         return None, r.stderr.strip()
@@ -1919,8 +1879,16 @@ def append_record(kind, payload, prefix="tr-"):
     rec = make_record(kind, payload, actor(), session(), ts, prefix)
     path = ledger_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, sort_keys=True) + "\n")
+    # One write(2) call for the whole line: the concurrent-append safety
+    # statement (paper sec 1) assumes single-write-call O_APPEND atomicity,
+    # and the buffered text layer can split a record longer than the stdio
+    # buffer across several write(2) calls.
+    line = (json.dumps(rec, sort_keys=True) + "\n").encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, line)
+    finally:
+        os.close(fd)
     return rec
 
 def load_events(stream=None):
@@ -1943,6 +1911,20 @@ def load_events(stream=None):
     return events
 
 # ---------------------------------------------------------------- commands
+
+def concerns_intake_error(tags):
+    """42010 concern tags: the ONE check they get -- each must be a
+    CONCERN_RE slug. Input hygiene only (a malformed tag is a typo, not a
+    judgment call); returns an error string or None. Called by cmd_claim
+    BEFORE build_claim_payload so a typo'd tag is refused before any
+    evidence command executes. Pure."""
+    for t in tags or []:
+        if not CONCERN_RE.match(t):
+            return (f"--concern tag {t!r} is not a slug -- lowercase "
+                    "letters, digits, hyphens, 1-32 chars ([a-z0-9-]{1,32})."
+                    " This is input hygiene, not a concern-gate: tags never "
+                    "block filing, they only have to be greppable.")
+    return None
 
 def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
                         ttl_days, basis, single_run, duplicate_ok, claims,
@@ -1981,6 +1963,13 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
                  "re-file with --scope-ok \"<one sentence: why this scope "
                  "covers that quantifier>\".")
 
+    # ADR-032: a scope_basis override with no explicit --ttl-days decays --
+    # stamp the default shelf life BEFORE the VERIFIED intake check reads
+    # ttl_days, so the effective ttl rides the ordinary INV-B/ADR-019
+    # machinery untouched. Never refuses; the notice is printed by the
+    # shell after a successful append.
+    ttl_days, ttl_default, _ = override_decay(scope_basis, ttl_days)
+
     paths = split_csv(paths_csv)
     if paths:
         # INV-M applies to any claim carrying evidence_paths, not only
@@ -2018,6 +2007,11 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
                "evidence_paths": paths}
     if scope_basis:
         payload["scope_basis"] = scope_basis
+    if ttl_default:
+        # ADR-032: mark that this ttl_days was defaulted (not author-chosen)
+        # so the override-velocity report (ADR-033) and any auditor can tell
+        # a decay expiry from a real diverge.
+        payload["ttl_default"] = True
     if overridden_duplicates:
         payload["overridden_duplicates"] = overridden_duplicates
 
@@ -2052,12 +2046,23 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
     return payload
 
 def cmd_claim(a):
+    # 42010 concerns: hygiene-check the slugs BEFORE intake so a typo'd
+    # tag never triggers an evidence run (VERIFIED intake executes the
+    # command twice); the tags themselves gate nothing.
+    err = concerns_intake_error(a.concern)
+    if err:
+        sys.exit("truth: " + err)
     events = load_events()
     claims, _ = fold(events)
     payload = build_claim_payload(a.text, a.evidence_class, a.evidence_cmd,
                                   a.paths, a.tier, a.ttl_days, a.basis,
                                   a.single_run, a.duplicate_ok, claims,
                                   a.scope_ok, a.evidence_unsafe_ok)
+    if a.concern:
+        # stored sorted+deduplicated: canonical form keeps the record's
+        # canonical serialization (ADR-016 fold key) order-independent of
+        # how the author happened to repeat the flag
+        payload["concerns"] = sorted(set(a.concern))
     if a.ttl_days:
         # FS-1: suggestion only, printed beside the author's choice --
         # TTLs stay author decisions, now data-adjacent.
@@ -2069,6 +2074,18 @@ def cmd_claim(a):
                   "not a gate)", file=sys.stderr)
     rec = append_record("claim", payload)
     print(json.dumps(rec) if a.json else rec["id"])
+    # ADR-032: after the successful append, voice the default-expiry notice
+    # when a --scope-ok override took the default ttl (never a refusal).
+    _, _, decay_notice = override_decay(a.scope_ok, a.ttl_days)
+    if decay_notice:
+        print(decay_notice, file=sys.stderr)
+    # field-notes-batch-m item 2 remedy: the filing already succeeded and
+    # its exit code stands; the captured intake returncode (first run --
+    # already in the evidence capsule, never re-run) just gets a voice.
+    warning = evidence_exit_warning(a.evidence_class,
+                                    payload.get("evidence", {}).get("returncode"))
+    if warning:
+        print(warning, file=sys.stderr)
 
 def cmd_verdict(a):
     claims, _ = fold(load_events())
@@ -2173,6 +2190,116 @@ def cmd_invalidate_scan(a):
             print(f"stale: {cid} ({why})")
         print(f"invalidate-scan: {len(hits)} claim(s) marked stale")
 
+def cmd_reaffirm(a):
+    """R3 / ADR-030: batch re-confirmation of stale claims whose evidence
+    COMMAND OUTPUT is unchanged (only that -- a watched-but-unread path
+    may have changed; the filed agree records what the anchor advance
+    cleared, see ADR-030). The shell only walks, gathers, executes, and
+    appends;
+    every decision is reaffirm_triage's. Execution goes through the SAME
+    screened path `verdict --recheck` uses -- screen_evidence_command
+    against the CURRENT allowlist (the screen gates execution, ADR-029),
+    then run_evidence + recheck_verdict; a second executor is forbidden
+    for the same reason a second matcher is (ADR-005's drift lesson)."""
+    events = load_events()
+    claims, _ = fold(events)
+    # ADR-010, reused verbatim from `verdict agree`: the comparison is
+    # claim-session == current session; TRUTH_SELF_VERDICT=1 (the F4-class
+    # self-attested override) disables it by making the comparison
+    # unmatchable, exactly as loud and deliberate as on a manual agree.
+    cur = (None if os.environ.get("TRUTH_SELF_VERDICT") == "1"
+           else session())
+    allow, deny = load_allowlist(), load_denylist()
+    rows, counts = [], {arm: 0 for arm in REAFFIRM_ARMS}
+    self_agreed = 0  # F4: agrees filed on this session's own claims
+    for cid, entry in sorted(claims.items()):
+        if entry["status"] != "stale":
+            continue
+        reason = latest_invalidation_reason(events, cid)
+        ttl_staled = ttl_staleness(events, cid)  # red-team F3: structured
+        was_agreed = previously_agreed(events, cid)
+        d = reaffirm_triage(entry, reason, cur, was_agreed,
+                            ttl_staled=ttl_staled)
+        if d["arm"] == "execute":
+            ev = entry["claim"]["payload"]["evidence"]
+            # Rescreen against the CURRENT allowlist -- committed policy
+            # NOW, not at filing time (the ADR-009 intake-AND-recheck
+            # posture); a refusal means the command never runs here.
+            screen_err = screen_evidence_command(ev["command"], allow,
+                                                 denylist=deny)
+            if screen_err:
+                d = reaffirm_triage(entry, reason, cur, was_agreed,
+                                    screen_err=screen_err,
+                                    ttl_staled=ttl_staled)
+            else:
+                digest, rc = run_evidence(ev["command"])
+                d = reaffirm_triage(entry, reason, cur, was_agreed,
+                                    recheck=recheck_verdict(ev, digest, rc),
+                                    ttl_staled=ttl_staled)
+        action, filed = d["action"], None
+        if d["arm"] == "match":
+            if cur is None and entry["claim"].get("session") == session():
+                self_agreed += 1  # F4: the override let this through
+            if a.dry_run:
+                action = "hash-match -- would file agree (dry-run: " \
+                         "nothing filed)"
+            else:
+                payload = {"claim": cid, "verdict": "agree",
+                           "basis": REAFFIRM_BASIS}
+                cp = entry["claim"]["payload"]
+                if cp.get("evidence_paths"):
+                    # F2 semantics, same rule as cmd_verdict: the agree
+                    # carries HEAD so the EFFECTIVE anchor advances and
+                    # the next scan diffs from here, not the old anchor.
+                    payload["anchor_commit"] = head_commit()
+                    # ...which also buries whatever watched-path change
+                    # staled the claim outside every future scan window
+                    # (the command's OUTPUT matched; the watched universe
+                    # may be wider than what it reads). Red-team F2:
+                    # record what the advance auto-cleared so the burial
+                    # is auditable -- the prior EFFECTIVE anchor (the
+                    # scan's diff base) and the watched files changed in
+                    # that range, via the scan's own helpers (a second
+                    # differ/matcher is forbidden, the F1/F5 lesson). If
+                    # the diff fails, the prior anchor alone still lands.
+                    prior = entry.get("anchor") or cp.get("anchor_commit")
+                    if prior:
+                        cleared = {"prior_anchor": prior}
+                        changed, _err = changed_files_since(prior)
+                        if changed is not None:
+                            cleared["touched"] = [
+                                f for f in changed
+                                if match_paths(f, cp.get("evidence_paths",
+                                                         []))]
+                        payload["reaffirm_cleared"] = cleared
+                filed = append_record("verdict", payload)["id"]
+                action = f"filed agree ({filed}): {REAFFIRM_BASIS}"
+        counts[d["arm"]] += 1
+        rows.append({"id": cid, "arm": d["arm"], "action": action,
+                     "filed": filed})
+    if cur is None:
+        # F4 (red-team): the manual-agree override is per-claim and loud;
+        # here one env var amplifies across the whole sweep. Same
+        # loudness, batch edition -- count what it actually let through.
+        print("truth: WARNING: TRUTH_SELF_VERDICT=1 override active -- "
+              f"reaffirm {'would auto-agree' if a.dry_run else 'auto-agreed'} "
+              f"{self_agreed} claim(s) THIS SESSION authored (batch "
+              "self-verification: the G11/ADR-010 independence seam is off "
+              "for this sweep)", file=sys.stderr)
+    summary = (f"reaffirm: {len(rows)} stale claim(s) -- "
+               f"{counts['match']} reaffirmed, {counts['mismatch']} "
+               f"diverged (dispatch), {counts['ttl']} ttl (re-file), "
+               f"{counts['manual']} manual, {counts['same_session']} "
+               "same-session"
+               + (" [dry-run: nothing filed]" if a.dry_run else ""))
+    if a.json:
+        print(json.dumps({"dry_run": a.dry_run, "claims": rows,
+                          "counts": counts}, indent=2))
+        return
+    for r in rows:
+        print(f"{r['id']}  {r['arm']:<12} {r['action']}")
+    print(summary)
+
 def cmd_premise(a):
     payload = {"issue": a.issue, "claim": a.claim_id}
     if a.supersedes:
@@ -2258,7 +2385,10 @@ def cmd_list(a):
              "tier": e["claim"]["payload"].get("cost_tier"),
              "class": e["claim"]["payload"].get("evidence_class"),
              "text": e["claim"]["payload"].get("text")}
-            for cid, e in claims.items() if not want or e["status"] in want]
+            for cid, e in claims.items()
+            if (not want or e["status"] in want)
+            and (not a.concern
+                 or a.concern in claim_concerns(e["claim"]["payload"]))]
     if a.json:
         print(json.dumps(rows, indent=2))
     else:
@@ -2433,6 +2563,19 @@ def cmd_done(a):
     if claim_rec:
         out += f"; filed {claim_rec['id']}"
     print(out)
+    if claim_payload:
+        # ADR-032: claim-at-death shares build_claim_payload, so a
+        # --scope-ok override at death earns the same default-expiry notice.
+        _, _, decay_notice = override_decay(a.scope_ok, a.ttl_days)
+        if decay_notice:
+            print(decay_notice, file=sys.stderr)
+        # field-notes-batch-m item 2: claim-at-death goes through the
+        # identical VERIFIED intake, so it earns the identical
+        # non-blocking warning after the successful close.
+        warning = evidence_exit_warning(
+            a.evidence_class, claim_payload.get("evidence", {}).get("returncode"))
+        if warning:
+            print(warning, file=sys.stderr)
 
 def cmd_issues(a):
     events = load_events()
@@ -2670,7 +2813,11 @@ def cmd_stats(a):
         events = [(n, ev) for n, ev in events
                   if (ev.get("ts") or "") >= a.since]
     report = stats_report(events, now_dt())
+    # ADR-033: the override-velocity section rides alongside stats. No
+    # threshold, no gate -- a non-blocking advisory only.
+    overrides = override_report(events, now_dt())
     if a.json:
+        report["overrides"] = overrides
         print(json.dumps(report, indent=2))
         return
     print("claims by status: " + (", ".join(
@@ -2690,6 +2837,93 @@ def cmd_stats(a):
     age = report["queue_max_age_days"]
     print(f"queue: {report['queue_size']} item(s)"
           + (f", oldest {age}d" if age is not None else ""))
+    # 42010 concern triage view (metadata report only, never a gate)
+    print("concerns: " + (", ".join(
+        f"{k}={v}" for k, v in sorted(report["concerns"].items()))
+        or "none")
+        + f", untagged-active={report['concerns_untagged_active']}")
+    # ADR-033: override-velocity section (feeds ADR-007's adoption gate).
+    o = overrides
+    mx = o["max_scope_ttl_days"]
+    print(f"overrides: scope-ok={o['scope_basis_filings']} "
+          f"decay-expiries={o['decay_expiries']} "
+          f"dup-overrides={o['overridden_duplicates']} "
+          f"unscreened={o['screened_false_filings']}"
+          + (f", max scope ttl {mx}d" if mx is not None else ""))
+    for r in o["repeats"]:
+        print(f"  advisory: {r['claim']} re-files the scope justification of "
+              f"{r['prior']} (now {r['prior_status']}) verbatim -- same scope "
+              "justification re-filed unchanged after expiry -- review "
+              "whether the scope judgment was ever real (ADR-033)")
+
+def git_hooks_dir(root):
+    """The hooks dir git actually consults: core.hooksPath when set, else
+    $GIT_DIR/hooks. Hooks live where core.hooksPath says, not where an
+    installer wrote them -- checking .git/hooks on a husky/lefthook repo
+    reports health the repo does not have (TL-1). Returns
+    (hooks_dir, hookspath_cfg); the cfg string lets doctor say WHY
+    .git/hooks was ignored."""
+    r = subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True,
+                       text=True, cwd=root)
+    gd = r.stdout.strip()
+    if not os.path.isabs(gd):
+        gd = os.path.join(root, gd)
+    hp_cfg = subprocess.run(["git", "config", "core.hooksPath"],
+                            capture_output=True, text=True,
+                            cwd=root).stdout.strip()
+    if hp_cfg:
+        hooks_dir = hp_cfg if os.path.isabs(hp_cfg) else os.path.join(root, hp_cfg)
+    else:
+        hooks_dir = os.path.join(gd, "hooks")
+    return hooks_dir, hp_cfg
+
+def find_gate_hook(hooks_dir, names, needle):
+    """The hook arm of the ADR-025 gate decision (factored out of doctor
+    so the R2 write-verb banner shares it -- one detection, no fork):
+    the first active hook under hooks_dir naming `needle`, or None.
+    Candidates are (path, must_be_executable): git requires +x in the
+    effective dir; manager-delegated user hooks (husky runs `.husky/<name>`
+    from the `_` shim dir via sh) commonly are not executable themselves.
+    isfile + try/except: a *directory* named `pre-commit`, or an
+    executable-not-readable hook, must yield a decision, not a traceback
+    (a doctor that crashes cannot decide the gate)."""
+    for name in names:
+        cands = [(os.path.join(hooks_dir, name), True)]
+        if os.path.basename(hooks_dir.rstrip(os.sep)) == "_":
+            cands.append((os.path.join(
+                os.path.dirname(hooks_dir.rstrip(os.sep)), name), False))
+        for hp, need_x in cands:
+            try:
+                if os.path.isfile(hp) \
+                        and (not need_x or os.access(hp, os.X_OK)) \
+                        and needle in open(hp, encoding="utf-8",
+                                           errors="replace").read():
+                    return hp
+            except OSError:
+                continue
+    return None
+
+def commit_gate_wired():
+    """R2 (roadmap-v3): the minimal ADR-025 commit-gate decision -- an
+    active check-truth pre-commit hook OR a CI config naming the gate
+    script -- shared with doctor's fuller report via git_hooks_dir/
+    find_gate_hook/ci_gate_names. Called at most once per CLI invocation
+    (main, write verbs only); file existence + grep, no network. Any
+    error deciding (no work tree, unreadable config, ...) counts as
+    wired: the banner is advisory noise and must never crash or block a
+    verb, so a weird repo state stays silent."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return True
+        root = r.stdout.strip()
+        hooks_dir, _ = git_hooks_dir(root)
+        if find_gate_hook(hooks_dir, ("pre-commit",), "check-truth"):
+            return True
+        return ci_gate_names("check-truth", root) is not None
+    except Exception:
+        return True
 
 def ci_gate_names(needle, root):
     """ADR-025 (H6): does a known CI config name `needle` (the commit-gate
@@ -2795,52 +3029,15 @@ def cmd_doctor(a):
         fail("union merge rule present",
              "add '.truth/claims.jsonl merge=union' to .gitattributes (E3)")
 
-    r = subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True,
-                       text=True, cwd=root)
-    gd = r.stdout.strip()
-    if not os.path.isabs(gd):
-        gd = os.path.join(root, gd)
-    # Hooks live where core.hooksPath says, not where an installer wrote
-    # them: checking .git/hooks on a husky/lefthook repo reports health the
-    # repo does not have (a doctor that fails open on its one job).
-    hp_cfg = subprocess.run(["git", "config", "core.hooksPath"],
-                            capture_output=True, text=True,
-                            cwd=root).stdout.strip()
-    if hp_cfg:
-        hooks_dir = hp_cfg if os.path.isabs(hp_cfg) else os.path.join(root, hp_cfg)
-    else:
-        hooks_dir = os.path.join(gd, "hooks")
-
-    def hook_candidates(name):
-        # (path, must_be_executable). git requires +x in the effective dir;
-        # manager-delegated user hooks (husky runs `.husky/<name>` from the
-        # `_` shim dir via sh) commonly are not executable themselves.
-        cands = [(os.path.join(hooks_dir, name), True)]
-        if os.path.basename(hooks_dir.rstrip(os.sep)) == "_":
-            cands.append((os.path.join(
-                os.path.dirname(hooks_dir.rstrip(os.sep)), name), False))
-        return cands
+    # Hook detection lives in git_hooks_dir/find_gate_hook (factored for
+    # the R2 write-verb banner): core.hooksPath honored, husky `_` shim
+    # delegation, directory-named-hook hardening -- one detection, shared.
+    hooks_dir, hp_cfg = git_hooks_dir(root)
 
     for names, needle, purpose in ((("pre-commit",), "check-truth", "INV-A/INV-B"),
                                    (("post-merge", "post-commit"),
                                     "invalidate-scan", "INV-C")):
-        hit = None
-        for name in names:
-            for hp, need_x in hook_candidates(name):
-                # isfile + try/except: a *directory* named `pre-commit`, or an
-                # executable-not-readable hook, must make doctor REPORT, not
-                # traceback (a doctor that crashes cannot decide the gate).
-                try:
-                    if os.path.isfile(hp) \
-                            and (not need_x or os.access(hp, os.X_OK)) \
-                            and needle in open(hp, encoding="utf-8",
-                                               errors="replace").read():
-                        hit = hp
-                        break
-                except OSError:
-                    continue
-            if hit:
-                break
+        hit = find_gate_hook(hooks_dir, names, needle)
         if hit:
             ok(f"{names[0]} hook enforces {purpose}",
                os.path.relpath(hit, root))
@@ -2937,6 +3134,11 @@ def main():
                    help="one sentence: why the evidence command's scope "
                         "covers the claim's universal quantifier (ADR-007; "
                         "stored as scope_basis, attackable by verifiers)")
+    c.add_argument("--concern", action="append", default=[], metavar="TAG",
+                   help="42010 stakeholder-concern slug ([a-z0-9-]{1,32}; "
+                        "repeatable; stored sorted+deduplicated). Triage "
+                        "metadata ONLY: never a gate, never affects "
+                        "derived status or the fold")
     c.add_argument("--evidence-unsafe-ok", action="store_true",
                    help="file despite a failed evidence-command safety "
                         "screen (ADR-009); recheck will refuse to execute "
@@ -2963,6 +3165,19 @@ def main():
                        help="mark claims stale: paths changed, TTL expired, or anchor lost")
     s.add_argument("--quiet", action="store_true")
     s.set_defaults(fn=cmd_invalidate_scan)
+
+    ra = sub.add_parser("reaffirm", help="batch re-confirm stale claims "
+                        "whose evidence is unchanged (ADR-030): re-run "
+                        "each claim's evidence through the screened "
+                        "recheck path; hash-match auto-files agree "
+                        "(anchor advances), mismatch is listed for "
+                        "dispatch and files NOTHING; TTL-staled, "
+                        "unscreened, never-agreed, and same-session "
+                        "claims are skipped with the reason")
+    ra.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="triage and report every arm; file nothing")
+    ra.add_argument("--json", action="store_true")
+    ra.set_defaults(fn=cmd_reaffirm)
 
     p = sub.add_parser("premise", help="link a tracker issue (external or wk-) "
                        "to a claim it depends on; --supersedes redirects a "
@@ -3066,6 +3281,9 @@ def main():
     l = sub.add_parser("list", help="list claims by derived status")
     for flag in STATUSES:
         l.add_argument("--" + flag.replace("_", "-"), dest=flag, action="store_true")
+    l.add_argument("--concern", metavar="TAG",
+                   help="only claims tagged with this 42010 concern slug "
+                        "(composes with the status flags)")
     l.add_argument("--json", action="store_true")
     l.set_defaults(fn=cmd_list)
 
@@ -3140,6 +3358,15 @@ def main():
     val.set_defaults(fn=cmd_validate)
 
     args = ap.parse_args()
+    # R2 (roadmap-v3): loud fail-open. An unwired commit gate means INV-A/
+    # INV-B and the ADR-008/016 detections silently don't run, and until
+    # now only `doctor` said so. Probed at most once per invocation, and
+    # only for write verbs -- read verbs (notably `validate --stdin`,
+    # which runs inside the gate itself) skip even the probe.
+    if args.cmd in WRITE_VERBS:
+        banner = commit_gate_banner(args.cmd, commit_gate_wired())
+        if banner:
+            print(banner, file=sys.stderr)
     try:
         args.fn(args)
     except BrokenPipeError:

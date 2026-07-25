@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "truth-ledger-record.v0.9",
+  "$id": "truth-ledger-record.v0.11",
   "title": "Truth ledger record",
   "description": "One line of .truth/claims.jsonl. The ledger is append-only and event-sourced: status is never stored, only derived by folding records in (ts, id) order. v0.5 adds the ADR-002 work kernel kinds: `issue` (wk- envelope id) and `issue_event`. This schema is the durable contract; scripts/truth validate implements a stdlib mirror of it. The $id carries a two-component SCHEMA-CONTRACT version, independent of the product version and bumped only when the record SHAPE changes (a new kind, field, or constraint) -- ADR-026; a shape-fingerprint test forces the bump. The schema is a NECESSARY-not-sufficient gate: it fixes structure, but ADR-009's evidence-screen SEMANTICS (that a screened=true was actually screened, that a command is safe to re-execute) are enforced OPERATIONALLY at filing and recheck, not here -- so the schema is deliberately silent on them (ADR-027).",
   "type": "object",
@@ -110,6 +110,10 @@
                 "minLength": 1,
                 "description": "ADR-007: the author's stated reason a scoped evidence command covers a universally quantified claim text -- attackable by verifiers"
               },
+              "ttl_default": {
+                "type": "boolean",
+                "description": "ADR-032: true = this ttl_days was defaulted (30) because a --scope-ok override carried no explicit --ttl-days; the override decays so the scope judgment is re-asked on expiry (ADR-019 scan -> ADR-030 re-file -> ADR-007 re-fires). Optional; the CLI stamps it only when defaulted."
+              },
               "overridden_duplicates": {
                 "type": "array",
                 "minItems": 1,
@@ -118,6 +122,16 @@
                   "pattern": "^tr-[0-9a-f]{8}$"
                 },
                 "description": "MEDIUM-1: the active claim ids a --duplicate-ok override declared this claim distinct from -- the auditable trace of the near-duplicate (G8) bypass"
+              },
+              "concerns": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9-]{1,32}$(?!\\n)"
+                },
+                "description": "ISO/IEC/IEEE 42010 stakeholder-concern tags, stamped at filing by --concern (stored sorted+deduplicated; uniqueItems keeps a hand-appended duplicate from double-counting in stats). TRIAGE METADATA ONLY: read by list --concern and stats; never a gate -- no effect on intake refusal (the slug pattern is input hygiene), derived status, the fold, or ready. The (?!\\n) guard exists because Python regex engines let $ match before a trailing newline (the mirror anchors \\A..\\Z); under ECMA semantics the lookahead is inert"
               },
               "evidence": {
                 "type": "object",
