@@ -84,3 +84,32 @@ pin a version if they need to.>
 Pre-written `done --claim` texts, scoped to evidence commands:
 
 - "<claim text an evidence command can actually show>" (`wk-XXXXXXXX`)
+
+## Verification & Validation
+
+<!-- Pairing fixed by the Field Guide (spec-archetypes.md § Appendix —
+oracle recipes). The oracle line cites the id that CARRIES the command
+— a wk- with --accept-cmd, or a standing sentinel tr- — never the
+command text itself. Prefer path-tripwired, output-stable sentinels
+over schema hash pins; a hash pin on an evolving schema is a
+divergence generator (recipes in the appendix). -->
+
+Verification: schema/endpoint contract tests + migration round-trip
+tests, per the API contract table — oracle carried by `wk-XXXXXXXX`
+(`--accept-cmd`) or standing sentinel `tr-XXXXXXXX`.
+
+Validation: pilot consumer + production data-quality monitoring —
+<who/what watches, since when> — attestation `tr-XXXXXXXX`
+(UNVERIFIED, `--ttl-days N`; expiry means re-walkthrough + re-file +
+edit this line).
+<!-- The attestation vehicle: an UNVERIFIED claim with an explicit
+--ttl-days — no evidence command, a human event on the record. When it
+expires (ADR-019), redo the review, file a fresh claim, and edit this
+line to cite it. -->
+
+Residual (accepted, not closable): <by TITLE only, e.g. "the world's
+semantics drifting under a conformant schema">
+<!-- Titles only in this subsection. An id written here is a live
+tripwire that fails this spec when it dies — the opposite of
+"accepted, not closable". -->
+

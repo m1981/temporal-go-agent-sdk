@@ -9,7 +9,7 @@
 # archive/, archived/, attic/, adr/, or freeze/ segment, and CHANGELOG files:
 # old names and dead paths are the POINT there. Convention for citing rename
 # ADRs from live docs without spelling the dead name: wildcard the filename
-# (docs/adr/NNN-*.md).
+# (docs/adr/truth/NNN-*.md for the template's machinery series).
 #
 # Checks:
 #   A  forbidden name patterns, one regex per line (case-insensitive) in the
@@ -50,7 +50,7 @@ for f in files:
         for pat in patterns:
             m = pat.search(line)
             if m:
-                hits.append(f"  FAIL  forbidden name '{m.group(0)}' (line {i}) -- listed in scripts/doc-health.patterns; if citing a rename ADR, wildcard the filename (docs/adr/NNN-*.md)")
+                hits.append(f"  FAIL  forbidden name '{m.group(0)}' (line {i}) -- listed in scripts/doc-health.patterns; if citing a rename ADR, wildcard the filename (docs/adr/truth/NNN-*.md)")
         for lm in LINK.finditer(line):
             target = lm.group(1).split('#', 1)[0]
             if not target or '://' in target or target.startswith('mailto:') or '*' in target:

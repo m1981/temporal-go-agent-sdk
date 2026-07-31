@@ -80,3 +80,32 @@ Pre-written `done --claim` texts, scoped to evidence commands:
 - "<claim text — for an adapter, usually: a named field survives
   extraction from a real/fixture external scene into the internal model,
   proven without hand re-entry>" (`wk-XXXXXXXX`)
+
+## Verification & Validation
+
+<!-- Pairing fixed by the Field Guide (spec-archetypes.md § Appendix —
+oracle recipes). The oracle line cites the id that CARRIES the command
+— a wk- with --accept-cmd, or a standing sentinel tr- — never the
+command text itself. -->
+
+Verification: consumer-driven contract tests against the translation
+map; degraded form: compatibility probes (the Compatibility watch made
+executable) — oracle carried by `wk-XXXXXXXX` (`--accept-cmd`) or
+standing sentinel `tr-XXXXXXXX`.
+
+Validation: runs against the real external system + translation-error
+  monitoring + the provider
+relationship (changelog watch, notice terms) — <who, date> —
+attestation `tr-XXXXXXXX` (UNVERIFIED, `--ttl-days N`; expiry means
+re-walkthrough + re-file + edit this line).
+<!-- The attestation vehicle: an UNVERIFIED claim with an explicit
+--ttl-days — no evidence command, a human event on the record. When it
+expires (ADR-019), redo the real-system run/review, file a fresh
+claim, and edit this line to cite it. -->
+
+Residual (accepted, not closable): <by TITLE only, e.g. "the third
+party's future — detection, never prevention">
+<!-- Titles only in this subsection. An id written here is a live
+tripwire that fails this spec when it dies — the opposite of
+"accepted, not closable". -->
+

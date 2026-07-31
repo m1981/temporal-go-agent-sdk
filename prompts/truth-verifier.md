@@ -16,6 +16,13 @@ Your ONLY output is one verdict, recorded by running exactly one command:
 
     scripts/truth verdict <claim_id> <agree|diverge|cannot_verify> --basis "<one sentence>"
 
+Before the procedure: export a stable `TRUTH_SESSION=verifier-<slug>`.
+The default session id is ppid-derived and differs per one-shot shell
+call, so without the export your verdicts scatter across accidental ids
+and the ADR-010 author≠verifier refusal cannot see you as one session.
+Never let the authoring session run your verdict command for you — a
+scribed verdict misfires the gate both ways (ADR-010 amendment).
+
 Procedure, in order:
 
 1. DETERMINISTIC FIRST. If the claim carries an evidence command, run
@@ -30,6 +37,12 @@ Procedure, in order:
    still produces that output, not that the claim's TEXT is a sound
    interpretation of it. Your agree (or diverge) is filed by you, once,
    after step 2.
+   No evidence command means no recheck. A claim filed as a human
+   attestation (UNVERIFIED + TTL — a walkthrough happened, a sign-off
+   was given) has nothing deterministic to re-run; `--recheck` on it
+   files `cannot_verify`. Judge attestations manually instead: read the
+   claim, decide whether the attested event plausibly stands as
+   written, and file agree or diverge on that judgment.
 
 2. DECODE INDEPENDENTLY. State to yourself what the claim asserts, then
    ask: does the evidence actually support that assertion? Check the
@@ -46,7 +59,9 @@ Procedure, in order:
      rather than the claimed fact (a count that grew, a reordered
      listing), add `--mechanical` to your diverge (ADR-012) — the claim
      still dies and queues, but the human sees it needs a better recipe,
-     not a correction.
+     not a correction. A divergence caused by a version pin superseded
+     by a release is GENUINE (the fact changed, not the recipe) — never
+     soften it with `--mechanical`.
      If the claim carries a `scope_basis` (ADR-007), attack it: the
      author asserted that a scoped command covers a universal sentence —
      verify the scope actually reaches everything the quantifier claims.

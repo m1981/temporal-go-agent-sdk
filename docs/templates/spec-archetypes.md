@@ -1,5 +1,9 @@
 # Spec Archetypes: A Field Guide
 
+> Reader: anyone (human or agent) starting a component spec | Enables:
+> classifying the component and drafting from the right archetype
+> outline | Update-trigger: a new recurring component shape, or a change
+> to spec-health / section-contract semantics
 > Reference — component specification templates (optional satellite,
 > like `.truth/README.md` § Feature specs — the ledger works without it)
 > **Drawn for:** any future software project, component-by-component
@@ -25,6 +29,7 @@ Ownership: this guide and the six `archetype-*.md` blanks beside it are template
 - [Layer 0 — above every component](#layer-0--above-every-component)
 - [The bootstrap prompt](#the-bootstrap-prompt)
 - [Making it self-enforcing](#making-it-self-enforcing)
+- [Appendix — oracle recipes that survive the screen](#appendix--oracle-recipes-that-survive-the-screen)
 
 ---
 
@@ -270,6 +275,89 @@ archetype's "Verification rules" prose above is a courtesy summary; where
 the prose and the gate disagree, the gate is authoritative.
 
 This is not hypothetical machinery — it's the generalized shape of what already runs in the project this guide grew out of: a spec convention with a section contract, a truth ledger binding claims to evidence commands, and a health script that gates on the third check above (cited facts still hold) — the other three ran as convention, not script. For a new project, the same shape can start much lighter — a checklist a human reads at session-close — and grow into scripted gates only where a real incident justifies the weight.
+
+---
+
+## Appendix — oracle recipes that survive the screen
+
+Each blank's Verification & Validation section names a technique and an
+instrument; this appendix is the recipe book behind it — the forms that
+survived the evidence screen and an adversarial round, and the traps
+that looked equivalent and were not. Every recipe here was earned by a
+reproduced failure, not deduced.
+
+**The layer-rule sentinel (archetype A), canonical form:**
+
+```
+grep -rl 'import os' src/ | wc -l | tr -d ' ' | grep -qx 0 && echo LAYER-CLEAN
+```
+
+The `tr -d ' '` is mandatory. macOS `wc -l` pads its count with spaces,
+so the unpadded form is a BLIND oracle: empty output and exit 1 in the
+clean state AND the violated state — after seeding a real violation, a
+recheck still reports "hash matches" and invites an agree. `!`-negation
+is not an alternative: the screen refuses it (`!` tokenizes as a
+program name). And filing over the exit-1 warning produces a hollow
+VERIFIED — the `&& echo LAYER-CLEAN` tail is what gives the claim a
+real success token to hash.
+
+**ADR-007 discipline.** The honest wording of a layer rule ("no I/O
+imports") is universal, and universal wording over a scoped command
+fires the quantifier gate. Don't dodge it: fire the gate honestly, pay
+the scope sentence (`--scope-ok` with a basis that says what the scope
+actually covers), and pass a deliberate `--ttl-days` — an override
+without one silently takes ADR-032's 30-day decay.
+
+**Schema sentinels (archetype B).** Prefer path-tripwired,
+output-stable forms: `jq -e 'has("x")' schema.json >/dev/null && echo
+SCHEMA-OK` — the watched path stales the claim on any edit, the stable
+token survives legitimate evolution. A hash pin on an evolving schema
+is a divergence generator: every legitimate change burns the claim and
+fails every citing spec. Reserve hash pins for genuinely frozen
+contracts.
+
+**Determinism and golden masters (archetype E).** These live ONLY in
+the ADR-014 acceptance lane: a wrapper script, allow-listed in
+`.truth/accept-allow`, declared as the work item's `--accept-cmd`, run
+once at `done`. Every inline form — process substitution, chained
+`sh`, temp files — is refused by the evidence screen, by design. The
+structural consequence is disclosed, not papered over: an acceptance
+oracle runs once; no standing "tests are green" or "pipeline
+deterministic" claim exists, and faking one via evidence is refused.
+
+**The gate itself (archetype F).** "The gate passes" is enforced by
+`bash scripts/session-close.sh` running the executable drops in
+`scripts/session-gates.d/` (or CI) — not by a ledger oracle. Say so in
+the spec; a ledger id for "the gate passes" would be a claim about a
+thing the ledger doesn't enforce.
+
+**Validation attestations (every archetype).** There is no HUMAN
+evidence class; the vehicle for "an expert walked through this and
+signed off" is an UNVERIFIED claim with an explicit `--ttl-days N`,
+agreed by a cross-session verifier. On expiry, ADR-019 semantics apply:
+re-file, don't re-verify — the walkthrough is redone, a fresh claim
+filed, and the spec's Validation line edited to cite it. The disclosed
+cost: each expiry is a human re-walkthrough + re-file + spec edit + a
+commit passing the full spec surface. And `verdict --recheck` on an
+attestation files `cannot_verify` — there is nothing deterministic to
+re-run; verifiers judge attestations manually (the verifier prompt says
+so).
+
+**Consumer conventions.** Per the precedence rule in this guide's
+header, a repo carrying its own spec-convention doc outranks the
+blanks. Such a repo must add the Verification & Validation section to
+its own section contract, or the section is a dead letter there — the
+blanks would carry it, the local gate would never miss it.
+
+**The traceability sibling.** The V&V section is the authoring half:
+which technique and which validation instrument the spec commits to.
+The assertion-level traceability half — spec-coverage manifests:
+`SC-<slug>-NNN` assertion ids plus a per-spec manifest watched by two
+sentinel claims — is documented in the template source repo's
+growth-gate archive. They compose: the V&V oracle id and the spec's SC
+manifest cover the same spec from two sides. (`SC-` placeholders here
+follow the same rule as `tr-XXXXXXXX`: never write a valid-looking
+example id in a shipped doc.)
 
 ---
 

@@ -1,9 +1,10 @@
-# .truth — append-only claims ledger (v0.9.15)
+# .truth — append-only claims ledger (v0.9.21)
 
 > Reader: any agent or human about to assert, trust, or re-verify a fact about this repository | Enables: filing a claim in one command, and knowing which claims are still live before acting on them | Update-trigger: the record schema, invariants, or CLI contract change
 
 A plain-JSONL truth layer that lives beside a work tracker (e.g. Beads;
-optional — the ledger works standalone, see docs/adr/001). Work records
+optional — the ledger works standalone, see docs/adr/truth/001). Work
+records
 answer *what to do*; this ledger answers *what is known and how*.
 
 The tracker coupling is an adapter seam (v0.4.1, ADR-004): `truth ready`
@@ -25,7 +26,7 @@ durable, fixes glob path-matching to respect `/`, and closes a
 duplicate-claim-id resurrection path. v0.5.3 closes the analogous
 issue-side path (duplicate `wk-` ids are first-wins, ADR-006). v0.5.4/
 v0.5.5 harden intake (see Record kinds & fold semantics below). See
-docs/adr/001 for the readiness-join semantics.
+docs/adr/truth/001 for the readiness-join semantics.
 
 ## Record kinds & fold semantics (the CLI contract)
 
@@ -183,7 +184,7 @@ the snapshot cache is deliberately unbuilt until that warning fires).
     scripts/truth-canary.sh            seeded-fault suite (run weekly; it
                                        prints its own count — all CAUGHT, or stop)
     prompts/truth-verifier.md          fixed verifier prompt (use `truth dispatch`)
-    docs/adr/                          decision records: 001 premise validity,
+    docs/adr/truth/                    decision records: 001 premise validity,
                                        002 work kernel, 003 satellite placement,
                                        004 tracker seam, 005 pre-edit whisper
                                        (accepted in trial), 006 issue-fold
@@ -246,7 +247,8 @@ back when prompted; headless,
 `TRUTH_HUMAN=1 TRUTH_HUMAN_ACK=wk-x truth done wk-x --cancel --basis "..."`.
 External trackers still work through the seam (`TRUTH_TRACKER_CMD`,
 `--stdin`); `truth issues --ready-json` emits the same contract, so you
-can run both and diff. Full semantics: `docs/adr/002-native-work-kernel.md`.
+can run both and diff. Full semantics:
+`docs/adr/truth/002-native-work-kernel.md`.
 
 **Acceptance oracles (ADR-014, v0.7).** `issue --accept-cmd "<cmd>"
 [--accept-kind verification|validation]` declares an executable finish
@@ -303,7 +305,7 @@ and on any regex listed in the optional `scripts/doc-health.patterns`
 (one per line — put your project's dead names there; no file, no name
 check). Backtick path shorthand is deliberately not checked — endemic and
 legitimate; links are the load-bearing references. Cite rename ADRs from
-live docs by wildcarding the filename (`docs/adr/NNN-*.md`) so the dead
+live docs by wildcarding the filename (`docs/adr/truth/NNN-*.md`) so the dead
 name never appears. Canary FAULT D1–D3 cover the semantics. Pairs well
 with a standing claim whose evidence is the gate itself (see Claim
 discipline below).
@@ -417,9 +419,61 @@ flag existed folds, lists, and validates unchanged.
   until you either add `bash` there (a conscious, committed policy
   choice — it runs repository code) or file with `--evidence-unsafe-ok`
   (recheck then never executes the command; verification is manual).
+- **Run the evidence yourself before filing.** The intake double-run
+  proves the command is DETERMINISTIC, not that it succeeds — a command
+  that stably fails (never-matching grep, empty output, rc≠0) used to file as
+  VERIFIED and "rechecks clean" by stable failure, demonstrating
+  nothing. Since v0.9.21 (ADR-035) a POSITIVE sentence with a failing
+  command is refused at intake; an absence proof files with an
+  advisory (its exit 1 IS the demonstration), and `--evidence-exit-ok`
+  stores a stated exception. The discipline still stays yours for the
+  paths the gate cannot see (inverted recipes exit 0; mixed sentences
+  ride the advisory): run it, see the success marker, then file.
+- **Grep invariant markers, never volatile strings.** Anchor evidence
+  to function/test names, canary FAULT labels, ADR-id strings — not
+  version numbers or dates (the next release bump mechanically breaks
+  the claim; re-file version-agnostic at ship time) and not prose
+  phrases, which can span source lines and make the grep silently
+  never-match. Corollary: don't QUOTE a test name containing a
+  quantifier token (`..._never_...`, `..._only_...`) in claim text —
+  the ADR-007 gate reads the token; describe the test instead.
 - **Commit first, then `done --claim`.** A completion claim filed before
   its shipping commit trips its own path tripwire (also noted under
   Feature specs).
+
+## Intake advisories (ADR-034, v0.9.20)
+
+A successful filing may carry advice — the FS-1 half-life note, the
+ADR-032 default-expiry notice, the hollow-VERIFIED exit warning. Since
+v0.9.20 these render as **one contiguous stderr block after the
+append**, every line prefixed `truth: advisory:` (stable, greppable —
+never capture-and-truncate stderr and assume you saw them). Under
+`--json` the echoed record additionally carries an `advisories` array
+(the echo only — the ledger line never stores advisories), so a
+harness that parses stdout cannot lose them to swallowed stderr. A
+clean filing prints no advisory line. The one exempt stderr surface is
+the commit-gate banner: it must fire at dispatch even on refused
+filings (fail-open-with-noise), so it deliberately stays outside the
+block. Intake gate ORDER is data (`INTAKE_GATES`): pre-execution text
+and path gates run first, the ADR-009 evidence screen and the G6
+double-run form the execution boundary (ADR-029 — the screen is a gate
+on execution, not a peer refusal), and post-execution gates read the
+captured evidence; canary FAULT GS pins the sequence.
+
+The first post-execution gate is the **positive-claim exit gate**
+(ADR-035, v0.9.21): a VERIFIED filing whose sentence carries no
+negation token (`NEGATION_TOKENS`: not/neither/nor/without/absent/
+lacks/lacking/missing/unused/unreferenced plus no/none/never/nowhere/
+zero) and whose recorded evidence exit is non-zero is **refused** —
+the command demonstrates nothing the sentence asserts (the hollow
+VERIFIED class). Absence proofs keep the advisory path: `grep`
+proving absence exits 1, and that exit IS the demonstration. A
+legitimately-failing positive proof (a differential `diff`, exit 1
+by design) files with `--evidence-exit-ok "<sentence>"` — stored as
+`evidence_exit_basis` (schema v0.12), silences the advisory, counted
+in the override report; the basis is refused beside an exit of 0
+(nothing to excuse), at intake and by `validate`. Canary FAULT X
+(8 arms) gates the behavior.
 
 ## Daily operation
 

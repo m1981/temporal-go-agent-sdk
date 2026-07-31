@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# truth-canary.sh v0.9.0 -- seeded-fault acceptance suite (v0.9.0 issue #4 C1-C5 contradicts/DISPUTED + SC session-close survival gate + v0.7.1 issue #5 W5-W8 impact --inverse + v0.7.0 ADR-014 AC1-AC7 acceptance oracles + v0.6.4 ADR-013 R10 premise supersede +seeded faults + TL hardening + adapter seam + bd normalization + ADR-002 work kernel + ADR-006 issue-fold hardening + INV-M dead-tripwire intake checks + ADR-005 impact verb + spec-health/doc-health incl. degradation paths + v0.6 solo-regime hardening: ADR-007 Q-faults, ADR-008 B-faults, ADR-009 E-faults, ADR-010 V-faults, ADR-011 H-faults, ADR-012 M1 + v0.6.2 review-finding faults: F1 arg-deny E5, F2 ts-evasion B3/B4, F3 scope-signal Q5/Q6 + v0.6.3 TL-2 work-kernel discovery warn + ADR-023 H5 FAULT T dormant-glob-materializes arm + ADR-024 FAULT T unreachable-glob-refused arm + ADR-025 FAULT DG doctor-decides-hook-or-CI + ADR-027 FAULT AN1-AN5 anchor_commit/commit git-SHA-prefix floor + ADR-028 FAULT IF future-dated-issue transition coherence + ADR-009/M4 FAULT SD screen-gates-execution ordering + v0.9.12 R3/ADR-030 FAULT RA reaffirm-mismatch-never-auto-filed + v0.9.13 R6/ADR-031 unified duplicate-id rule: B1/B3-B5 expect the one message, FAULT K2 later-ts distinct duplicate flips to refused + v0.9.14 R12/ADR-032 FAULT SD-decay --scope-ok default-expiry (4 arms incl. negative control) + R13/ADR-033 FAULT OV override-velocity verbatim-repeat advisory (2 arms incl. negative control)).
+# truth-canary.sh v0.9.0 -- seeded-fault acceptance suite (v0.9.0 issue #4 C1-C5 contradicts/DISPUTED + SC session-close survival gate + v0.7.1 issue #5 W5-W8 impact --inverse + v0.7.0 ADR-014 AC1-AC7 acceptance oracles + v0.6.4 ADR-013 R10 premise supersede +seeded faults + TL hardening + adapter seam + bd normalization + ADR-002 work kernel + ADR-006 issue-fold hardening + INV-M dead-tripwire intake checks + ADR-005 impact verb + spec-health/doc-health incl. degradation paths + v0.6 solo-regime hardening: ADR-007 Q-faults, ADR-008 B-faults, ADR-009 E-faults, ADR-010 V-faults, ADR-011 H-faults, ADR-012 M1 + v0.6.2 review-finding faults: F1 arg-deny E5, F2 ts-evasion B3/B4, F3 scope-signal Q5/Q6 + v0.6.3 TL-2 work-kernel discovery warn + ADR-023 H5 FAULT T dormant-glob-materializes arm + ADR-024 FAULT T unreachable-glob-refused arm + ADR-025 FAULT DG doctor-decides-hook-or-CI + ADR-027 FAULT AN1-AN5 anchor_commit/commit git-SHA-prefix floor + ADR-028 FAULT IF future-dated-issue transition coherence + ADR-009/M4 FAULT SD screen-gates-execution ordering + v0.9.12 R3/ADR-030 FAULT RA reaffirm-mismatch-never-auto-filed + v0.9.13 R6/ADR-031 unified duplicate-id rule: B1/B3-B5 expect the one message, FAULT K2 later-ts distinct duplicate flips to refused + v0.9.14 R12/ADR-032 FAULT SD-decay --scope-ok default-expiry (4 arms incl. negative control) + R13/ADR-033 FAULT OV override-velocity verbatim-repeat advisory (2 arms incl. negative control) + v0.9.20/ADR-034 FAULT GS staged gate table + CC-1 advisory block (5 arms incl. negative control) + v0.9.21/ADR-035 FAULT X positive-claim exit gate (8 arms incl. negative control + validate mirror)).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PASS=0; FAIL=0
@@ -1873,6 +1873,176 @@ else
 fi
 cd "$OV_PREV"
 rm -rf "$OV"
+
+# ---- FAULT GS (ADR-034, v0.9.20): staged gate table + CC-1 advisories ----
+# The intake gate sequence is data (INTAKE_GATES) and post-append
+# advisories fold into ONE prefixed block. Five arms: (1) GS1 a filing
+# tripping BOTH the G8 near-duplicate gate and the evidence screen
+# refuses with the G8 message -- pre-execution precedes the execution
+# boundary, nothing ran; (2) GS2 same contrast for the ADR-007 gate vs
+# the screen; (3) GS3 --json: the echoed record carries advisories[]
+# while the LEDGER line stays advisory-free; (4) GS4 two advisories
+# render as one contiguous prefixed block; (5) GS5 NEGATIVE CONTROL: a
+# clean filing prints zero advisory lines (silence on clean, CC-1).
+say "FAULT GS (ADR-034): staged gate order + one CC-1 advisory block"
+GS="$(mktemp -d)"; GS_PREV="$PWD"
+mkrepo "$GS"
+echo "data" > f.txt
+git add -A && git commit -qm "gs: init" --no-verify -q
+$T claim "f.txt plainly holds the data marker" --class VERIFIED \
+   --evidence-cmd "cat f.txt" --paths f.txt --tier P2 >/dev/null 2>&1
+GS1ERR=$($T claim "f.txt plainly holds the data marker now" \
+         --class VERIFIED --evidence-cmd "rm -rf f.txt" --paths f.txt \
+         --tier P2 2>&1); GS1RC=$?
+if [ "$GS1RC" -ne 0 ] && printf '%s\n' "$GS1ERR" | grep -q "(G8)" \
+   && ! printf '%s\n' "$GS1ERR" | grep -qi "allowlist" && [ -f f.txt ]; then
+  ok "GS1: near-duplicate (pre-execution) refused before the screen saw rm"
+else
+  miss "GS1: staged order broken -- G8 did not precede the screen"
+fi
+GS2ERR=$($T claim "no stray markers exist anywhere in the codebase" \
+         --class VERIFIED --evidence-cmd "rm -rf --include=f.txt src/" \
+         --paths f.txt --tier P2 2>&1); GS2RC=$?
+if [ "$GS2RC" -ne 0 ] && printf '%s\n' "$GS2ERR" | grep -q "ADR-007" \
+   && ! printf '%s\n' "$GS2ERR" | grep -qi "allowlist" && [ -f f.txt ]; then
+  ok "GS2: quantifier-scope (pre-execution) refused before the screen saw rm"
+else
+  miss "GS2: staged order broken -- ADR-007 did not precede the screen"
+fi
+GS3OUT=$($T claim "the data marker sits in f.txt as committed" \
+         --class VERIFIED --evidence-cmd "cat f.txt" --paths f.txt \
+         --tier P2 --scope-ok "single-file scope is the whole domain" \
+         --json 2>/dev/null)
+if printf '%s\n' "$GS3OUT" | python3 -c "import json,sys; o=json.load(sys.stdin); sys.exit(0 if any('ADR-032' in a for a in o.get('advisories', [])) else 1)" \
+   && ! tail -1 .truth/claims.jsonl | grep -q '"advisories"'; then
+  ok "GS3: --json echo carries advisories[]; the ledger line does not"
+else
+  miss "GS3: advisories missing from --json echo, or leaked into the ledger line"
+fi
+GS4ERR=$($T claim "f.txt visibly lacks any zebra marker" --class VERIFIED \
+         --evidence-cmd "grep zebra f.txt" --paths f.txt --tier P2 \
+         --scope-ok "single-file scope is the whole domain" \
+         2>&1 >/dev/null)
+GS4N=$(printf '%s\n' "$GS4ERR" | grep -c "^truth: advisory:")
+GS4CONTIG=$(printf '%s\n' "$GS4ERR" | grep -n "^truth: advisory:" \
+            | cut -d: -f1 | python3 -c "import sys; ns=[int(l) for l in sys.stdin]; print('yes' if ns and ns[-1]-ns[0]==len(ns)-1 else 'no')")
+if [ "$GS4N" -ge 2 ] && [ "$GS4CONTIG" = "yes" ]; then
+  ok "GS4: decay notice + exit warning fold into one contiguous advisory block ($GS4N lines)"
+else
+  miss "GS4: advisories not folded into one contiguous prefixed block (n=$GS4N contig=$GS4CONTIG)"
+fi
+GS5ERR=$($T claim "f.txt carries the plain data line as committed" \
+         --class VERIFIED --evidence-cmd "cat f.txt" --paths f.txt \
+         --tier P2 2>&1 >/dev/null)
+if printf '%s\n' "$GS5ERR" | grep -q "^truth: advisory:"; then
+  miss "GS5: a clean filing printed an advisory line (CC-1 silence broken)"
+else
+  ok "GS5: negative control -- a clean filing prints zero advisory lines"
+fi
+cd "$GS_PREV"
+rm -rf "$GS"
+
+# ---- FAULT X (ADR-035, v0.9.21): positive-claim exit gate ---------------
+# A VERIFIED filing whose sentence carries no NEGATION_TOKENS token and
+# whose recorded evidence exit is non-zero is refused; a negation token
+# keeps the v0.9.11 warning path; --evidence-exit-ok stores its basis
+# and silences the warning; a basis beside exit 0 is refused at intake
+# and by validate (X5). X6 (the lexicon subset tripwire) is a core
+# unit test. Arms: X1 refusal (nothing appended); X2 negation warning
+# path; X3 basis stored + warning silenced, and basis-with-exit-0
+# refused; X4 NEGATIVE CONTROL positive+exit0 files silently; X5
+# validate refuses basis-beside-rc0, tolerates a legacy capsule with
+# no returncode; X7 done --claim parity.
+say "FAULT X (ADR-035): positive text + failing evidence must refuse; absence proofs keep the warning path"
+XG="$(mktemp -d)"; XG_PREV="$PWD"
+mkrepo "$XG"
+echo "data" > f.txt
+git add -A && git commit -qm "x: init" --no-verify -q
+X1ERR=$($T claim "f.txt holds a zebra marker" --class VERIFIED \
+        --evidence-cmd "grep zebra f.txt" --paths f.txt 2>&1); X1RC=$?
+if [ "$X1RC" -ne 0 ] && printf '%s\n' "$X1ERR" | grep -q "ADR-035" \
+   && [ ! -s .truth/claims.jsonl ]; then
+  ok "X1: positive sentence + exit 1 refused naming ADR-035, nothing appended"
+else
+  miss "X1: hollow positive filing not refused (rc=$X1RC)"
+fi
+X2ERR=$($T claim "f.txt lacks a zebra marker" --class VERIFIED \
+        --evidence-cmd "grep zebra f.txt" --paths f.txt 2>&1 >/dev/null); X2RC=$?
+if [ "$X2RC" -eq 0 ] && printf '%s\n' "$X2ERR" | grep -q "^truth: advisory: evidence command exited 1"; then
+  ok "X2: negation token keeps the warning path (filed + advisory)"
+else
+  miss "X2: absence proof did not file with the warning (rc=$X2RC)"
+fi
+X3ERR=$($T claim "the zebra differential probe reports a difference by design" \
+        --class VERIFIED --evidence-cmd "grep zebra f.txt" --paths f.txt \
+        --evidence-exit-ok "diff-style probe: exit 1 is the demonstration" \
+        2>&1 >/dev/null); X3RC=$?
+X3STORED=$(tail -1 .truth/claims.jsonl | grep -c "evidence_exit_basis")
+if [ "$X3RC" -eq 0 ] && [ "$X3STORED" -eq 1 ] \
+   && ! printf '%s\n' "$X3ERR" | grep -q "evidence command exited"; then
+  ok "X3: --evidence-exit-ok files, stores the basis, silences the warning"
+else
+  miss "X3: basis path broken (rc=$X3RC stored=$X3STORED)"
+fi
+if $T claim "f.txt plainly holds the data line" --class VERIFIED \
+     --evidence-cmd "cat f.txt" --paths f.txt \
+     --evidence-exit-ok "spurious" >/dev/null 2>&1; then
+  miss "X3b: a basis beside exit 0 filed (nothing to excuse)"
+else
+  ok "X3b: a basis beside exit 0 is refused at intake"
+fi
+X4ERR=$($T claim "f.txt carries the committed data marker" --class VERIFIED \
+        --evidence-cmd "grep data f.txt" --paths f.txt 2>&1 >/dev/null); X4RC=$?
+if [ "$X4RC" -eq 0 ] && ! printf '%s\n' "$X4ERR" | grep -q "^truth: advisory:"; then
+  ok "X4: negative control -- positive sentence + exit 0 files silently"
+else
+  miss "X4: clean positive filing not silent (rc=$X4RC)"
+fi
+X5LINE=$(tail -1 .truth/claims.jsonl | python3 -c "
+import json,sys
+r=json.load(sys.stdin); r['id']='tr-0000feed'
+r['payload']['evidence_exit_basis']='noise'
+r['payload']['evidence']['returncode']=0
+print(json.dumps(r))")
+printf '%s\n' "$X5LINE" >> .truth/claims.jsonl
+if $T validate 2>&1 | grep -q "nothing to excuse"; then
+  ok "X5: validate refuses evidence_exit_basis beside a recorded exit of 0"
+else
+  miss "X5: validate accepted a basis with nothing to excuse"
+fi
+python3 -c "
+import json
+lines=open('.truth/claims.jsonl').read().splitlines()
+lines=lines[:-1]
+r=json.loads(lines[-1]); r['id']='tr-0000f00d'
+r['payload']['evidence_exit_basis']='legacy capsule tolerance probe'
+del r['payload']['evidence']['returncode']
+lines.append(json.dumps(r))
+open('.truth/claims.jsonl','w').write('\n'.join(lines)+'\n')"
+if $T validate >/dev/null 2>&1 && ! $T validate 2>&1 | grep -q "nothing to excuse"; then
+  ok "X5b: validate tolerates a basis on a legacy capsule with no returncode"
+else
+  miss "X5b: validate flagged (or crashed on) a legacy capsule lacking returncode"
+fi
+git checkout -q -- .truth/claims.jsonl 2>/dev/null || true
+$T issue "x7 probe" >/dev/null 2>&1
+X7ID=$($T issues --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)[-1]['id'])" 2>/dev/null)
+[ -n "$X7ID" ] || X7ID=$(python3 -c "
+import json
+for l in open('.truth/claims.jsonl'):
+    r=json.loads(l)
+    if r.get('kind')=='issue': last=r['id']
+print(last)")
+$T start "$X7ID" >/dev/null 2>&1
+X7ERR=$($T done "$X7ID" --basis "probe" --claim "the probe left a zebra marker" \
+        --class VERIFIED --evidence-cmd "grep zebra f.txt" --paths f.txt 2>&1); X7RC=$?
+if [ "$X7RC" -ne 0 ] && printf '%s\n' "$X7ERR" | grep -q "ADR-035"; then
+  ok "X7: done --claim hits the identical exit gate (both-or-neither held)"
+else
+  miss "X7: claim-at-death evaded the exit gate (rc=$X7RC)"
+fi
+cd "$XG_PREV"
+rm -rf "$XG"
 
 say ""
 say "canary result: $PASS caught, $FAIL missed"

@@ -72,3 +72,36 @@ Pre-written `done --claim` texts, scoped to evidence commands:
 - "<claim text — for a cross-cutting concern, usually: the gate script
   exists, runs at the named point (CI / session-close), and fails
   correctly on a known-bad fixture>" (`wk-XXXXXXXX`)
+
+## Verification & Validation
+
+<!-- Pairing fixed by the Field Guide (spec-archetypes.md § Appendix —
+oracle recipes). "The gate passes" is enforced by
+`bash scripts/session-close.sh` running the drops in
+`scripts/session-gates.d/` (or CI), NOT by a ledger oracle — never
+imply one. Ledger ids here carry facts ABOUT the gate (it exists, it
+fails the known-bad fixture); when they do, cite the id that CARRIES
+the command — a wk- with --accept-cmd, or a standing sentinel tr- —
+never the command text itself. -->
+
+Verification: the gate script itself, per quality-attribute scenario,
+enforced at session-close / CI (`scripts/session-gates.d/`); facts
+about the gate carried by `wk-XXXXXXXX` (`--accept-cmd`) or standing
+sentinel `tr-XXXXXXXX`.
+
+Validation: SLO monitoring + error budgets + game days; incident review feeding
+new rows into the scenario table — <who, cadence> — attestation
+`tr-XXXXXXXX` (UNVERIFIED, `--ttl-days N`; expiry means
+re-walkthrough + re-file + edit this line).
+<!-- The attestation vehicle: an UNVERIFIED claim with an explicit
+--ttl-days — no evidence command, a human event on the record. When it
+expires (ADR-019), redo the review, file a fresh claim, and edit this
+line to cite it. -->
+
+Residual (accepted, not closable): <by TITLE only, e.g.
+"unknown-unknowns — incidents are the universe's pull requests against
+the scenario table">
+<!-- Titles only in this subsection. An id written here is a live
+tripwire that fails this spec when it dies — the opposite of
+"accepted, not closable". -->
+

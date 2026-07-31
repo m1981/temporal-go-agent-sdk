@@ -69,3 +69,31 @@ Pre-written `done --claim` texts, scoped to evidence commands:
 <!-- Any OPEN cell above with no wk- id attached surfaced while drafting
 this spec, not from prior planning — say so plainly, in a closing
 paragraph, rather than silently filing work on the reader's behalf. -->
+
+## Verification & Validation
+
+<!-- Pairing fixed by the Field Guide (spec-archetypes.md § Appendix —
+oracle recipes). The oracle line cites the id that CARRIES the command
+— a wk- with --accept-cmd, or a standing sentinel tr- — never the
+command text itself. -->
+
+Verification: executable Given/When/Then scenarios (the Acceptance
+criteria, run as tests) + state/visual regression per the screen
+inventory — oracle carried by `wk-XXXXXXXX` (`--accept-cmd`) or
+standing sentinel `tr-XXXXXXXX`.
+
+Validation: usability tests / A-B / beta pilots / task-completion analytics —
+<instrument, who, date> — attestation `tr-XXXXXXXX` (UNVERIFIED,
+`--ttl-days N`; expiry means re-walkthrough + re-file + edit this
+line).
+<!-- The attestation vehicle: an UNVERIFIED claim with an explicit
+--ttl-days — no evidence command, a human event on the record. When it
+expires (ADR-019), redo the session/analysis, file a fresh claim, and
+edit this line to cite it. -->
+
+Residual (accepted, not closable): <by TITLE only, e.g. "job-fit over
+time; trust and feel">
+<!-- Titles only in this subsection. An id written here is a live
+tripwire that fails this spec when it dies — the opposite of
+"accepted, not closable". -->
+

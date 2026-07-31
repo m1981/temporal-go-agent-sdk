@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "truth-ledger-record.v0.11",
+  "$id": "truth-ledger-record.v0.12",
   "title": "Truth ledger record",
   "description": "One line of .truth/claims.jsonl. The ledger is append-only and event-sourced: status is never stored, only derived by folding records in (ts, id) order. v0.5 adds the ADR-002 work kernel kinds: `issue` (wk- envelope id) and `issue_event`. This schema is the durable contract; scripts/truth validate implements a stdlib mirror of it. The $id carries a two-component SCHEMA-CONTRACT version, independent of the product version and bumped only when the record SHAPE changes (a new kind, field, or constraint) -- ADR-026; a shape-fingerprint test forces the bump. The schema is a NECESSARY-not-sufficient gate: it fixes structure, but ADR-009's evidence-screen SEMANTICS (that a screened=true was actually screened, that a command is safe to re-execute) are enforced OPERATIONALLY at filing and recheck, not here -- so the schema is deliberately silent on them (ADR-027).",
   "type": "object",
@@ -109,6 +109,11 @@
                 "type": "string",
                 "minLength": 1,
                 "description": "ADR-007: the author's stated reason a scoped evidence command covers a universally quantified claim text -- attackable by verifiers"
+              },
+              "evidence_exit_basis": {
+                "type": "string",
+                "minLength": 1,
+                "description": "ADR-035: the author's stated reason a FAILING evidence command proves a positive sentence -- attackable by verifiers; the validate mirror additionally refuses it beside a recorded exit of 0 (nothing to excuse), a cross-field rule this schema deliberately does not encode (ADR-027: necessary, not sufficient)"
               },
               "ttl_default": {
                 "type": "boolean",

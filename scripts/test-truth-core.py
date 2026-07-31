@@ -1911,6 +1911,20 @@ CORPUS = [
      rec("claim", claim_p(scope_basis="quantifier scoped to services/")), True),
     ("claim empty scope_basis",
      rec("claim", claim_p(scope_basis="")), False),
+    # ---- ADR-035 exit-override basis (v0.9.21). The present-true seed
+    # carries an rc=1 capsule; basis-beside-rc-0 is the deliberate
+    # cross-field DISAGREEMENT between the two surfaces (schema accepts,
+    # validate mirror refuses), so it lives in canary X5, never here. ----
+    ("verified with evidence_exit_basis rc1",
+     rec("claim", verified_p(evidence={"command": "grep zebra f.txt",
+                                       "output_hash": "sha256:" + "0" * 64,
+                                       "returncode": 1,
+                                       "screened": True},
+                             evidence_exit_basis="diff-style probe: exit 1 "
+                                                 "is the demonstration")),
+     True),
+    ("claim empty evidence_exit_basis",
+     rec("claim", claim_p(evidence_exit_basis="")), False),
     # MEDIUM-1: --duplicate-ok override trace
     ("claim with overridden_duplicates",
      rec("claim", claim_p(overridden_duplicates=["tr-00000001",
@@ -2295,9 +2309,10 @@ class TestCrossSurfaceVersions(unittest.TestCase):
     # $id to the shape and no test could see it. This pins the shape: any
     # edit to the schema (minus its own $id) breaks the fingerprint, forcing
     # a conscious "is this a shape change? then bump $id" review.
-    EXPECTED_SCHEMA_ID = "truth-ledger-record.v0.11"
+    # v0.12: ADR-035 adds the evidence_exit_basis field (a shape change).
+    EXPECTED_SCHEMA_ID = "truth-ledger-record.v0.12"
     PINNED_SHAPE_SHA256 = \
-        "edd25306ac120a4f89892e5a51ada7c9650dbe230f58e216814fb44afc51f0dc"
+        "86f3cb9a4ef3f31fe94ef7f13832fe9eb9f9078c8145701df4fd9f00e552d2b5"
 
     def _schema(self):
         import json as _json
@@ -2370,7 +2385,9 @@ class TestAppendSingleWrite(unittest.TestCase):
 # git sandboxes (temp dirs only, no network -- TestAppendSingleWrite's
 # spirit).
 
-R1_WARN = "truth: warning: evidence command exited"
+# ADR-034: the warning message is bare; the CC-1 assembler renders it
+# into the one advisory block with the stable prefix below.
+R1_WARN = "truth: advisory: evidence command exited"
 R2_BANNER = "truth: WARNING -- no commit gate is wired"
 
 def _git(d, *args):
@@ -2406,7 +2423,8 @@ class TestEvidenceExitWarning(unittest.TestCase):
 
     def test_warning_fires_only_on_verified_nonzero(self):
         w = tm.evidence_exit_warning("VERIFIED", 2)
-        self.assertTrue(w.startswith("truth: warning:"))
+        # ADR-034: bare message -- the prefix is the renderer's job
+        self.assertTrue(w.startswith("evidence command exited"))
         self.assertIn("evidence command exited 2", w)
         self.assertIn("verifies nothing", w)
         self.assertIsNone(tm.evidence_exit_warning("VERIFIED", 0))
@@ -2440,6 +2458,82 @@ class TestEvidenceExitWarning(unittest.TestCase):
                        "--evidence-cmd", "cat f.txt", "--paths", "f.txt")
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertNotIn(R1_WARN, r.stderr)
+
+class TestAdvisoryAssembler(unittest.TestCase):
+    """ADR-034: the CC-1 advisory renderer, the staged gate table's
+    pinned order, and the shared-fold parity of the stats consumers."""
+
+    def test_escape_ctrl_neutralizes_esc_and_keeps_newline(self):
+        # SI-3: ESC survives intake (INV-M refuses only whitespace), so
+        # the renderer must neutralize it before it reaches a terminal.
+        s = tm._escape_ctrl("a\x1b[31mred\nplain")
+        self.assertNotIn("\x1b", s)
+        self.assertIn("\\x1b", s)
+        self.assertIn("\n", s)
+
+    def test_render_block_prefixes_every_line_silence_on_empty(self):
+        block = tm.render_advisory_block(["one", None, "two\nthree"])
+        lines = block.splitlines()
+        self.assertEqual(len(lines), 3)
+        for ln in lines:
+            self.assertTrue(ln.startswith(tm.ADVISORY_PREFIX))
+        self.assertIsNone(tm.render_advisory_block([None, ""]))
+
+    def test_gate_table_pre_execution_order_is_pinned(self):
+        # Order is data (ADR-034); this pin is the unit half of GS1/GS2.
+        names = [n for st, n, _ in tm.INTAKE_GATES if st == "pre-execution"]
+        self.assertEqual(names, ["text-nonempty", "near-duplicate-g8",
+                                 "quantifier-scope-adr007",
+                                 "scope-decay-adr032", "paths-inv-m",
+                                 "class-precheck"])
+
+    def test_stats_consumers_folded_parity(self):
+        ev = [(1, {"id": "tr-aaaaaaaa", "kind": "claim",
+                   "ts": "2026-01-01T00:00:00.000000+00:00",
+                   "actor": "t", "session": "s",
+                   "payload": {"text": "x", "evidence_class": "UNVERIFIED",
+                               "cost_tier": "P2", "ttl_days": None,
+                               "evidence_paths": []}})]
+        now = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        folded = tm.fold(ev)
+        self.assertEqual(tm.stats_report(ev, now),
+                         tm.stats_report(ev, now, folded=folded))
+        self.assertEqual(tm.override_report(ev, now),
+                         tm.override_report(ev, now, folded=folded))
+
+class TestExitGate(unittest.TestCase):
+    """ADR-035: the positive-claim exit gate's pure decision, and the
+    X6 lexicon subset tripwire (one-directional: catches removals from
+    NEGATION_TOKENS, not additions to ADR-007's set)."""
+
+    def test_positive_text_failing_exit_refused(self):
+        err = tm.evidence_exit_error("f.txt holds a zebra", 1, None)
+        self.assertIn("ADR-035", err)
+        self.assertIn("exited 1", err)
+
+    def test_negation_token_keeps_warning_path(self):
+        for text in ("f.txt lacks a zebra", "no zebra appears in f.txt",
+                     "the file is missing a zebra", "zero zebra hits"):
+            self.assertIsNone(tm.evidence_exit_error(text, 1, None))
+
+    def test_basis_excuses_failure_but_not_success(self):
+        self.assertIsNone(
+            tm.evidence_exit_error("a and b differ", 1, "diff exits 1"))
+        err = tm.evidence_exit_error("f.txt holds data", 0, "spurious")
+        self.assertIn("nothing to excuse", err)
+
+    def test_zero_and_legacy_none_exit_pass(self):
+        self.assertIsNone(tm.evidence_exit_error("f.txt holds data", 0, None))
+        self.assertIsNone(tm.evidence_exit_error("f.txt holds data", None,
+                                                 None))
+
+    def test_x6_negation_superset_of_quantifier_negatives(self):
+        five = {"no", "none", "never", "nowhere", "zero"}
+        self.assertTrue(five <= tm.NEGATION_TOKENS)
+        self.assertTrue(five <= tm.QUANTIFIER_TOKENS)
+        # copies, not a shared reference: widening one must not widen
+        # the other (ADR-035)
+        self.assertIsNot(tm.NEGATION_TOKENS, tm.QUANTIFIER_TOKENS)
 
 class TestCommitGateBanner(unittest.TestCase):
     """R2: loud fail-open -- an unwired ADR-025 commit gate is announced

@@ -76,3 +76,36 @@ Pre-written `done --claim` texts, scoped to evidence commands:
 - "<claim text — for a pipeline, usually: a named rule produces a
   specific, hand-computed output for a specific fixture input, matching
   a reference to the unit>" (`wk-XXXXXXXX`)
+
+## Verification & Validation
+
+<!-- Pairing fixed by the Field Guide (spec-archetypes.md § Appendix —
+oracle recipes). The oracle line cites the id that CARRIES the command
+— here always a wk- with --accept-cmd — never the command text itself.
+The determinism/golden-master check lives ONLY in the ADR-014
+acceptance lane: a wrapper script, allow-listed in
+`.truth/accept-allow`, run once at `done`. It is NEVER a standing
+evidence claim — every inline form is refused by the screen, and there
+is no standing "tests are green" claim to fake (that gap is
+structural; disclose it, don't paper over it). -->
+
+Verification: golden master + run-twice determinism, via a wrapper
+script wired as the acceptance oracle — carried by `wk-XXXXXXXX`
+(`--accept-cmd`, ADR-014).
+
+Validation: expert sign-off on the golden fixtures + downstream
+  consumer acceptance (the blessing IS
+the validation event) + parallel/shadow run — <who, date> —
+attestation `tr-XXXXXXXX` (UNVERIFIED, `--ttl-days N`; expiry means
+re-walkthrough + re-file + edit this line).
+<!-- The attestation vehicle: an UNVERIFIED claim with an explicit
+--ttl-days — no evidence command, a human event on the record. When it
+expires (ADR-019), redo the fixture review/shadow run, file a fresh
+claim, and edit this line to cite it. -->
+
+Residual (accepted, not closable): <by TITLE only, e.g. "inputs the
+fixture corpus never sampled">
+<!-- Titles only in this subsection. An id written here is a live
+tripwire that fails this spec when it dies — the opposite of
+"accepted, not closable". -->
+

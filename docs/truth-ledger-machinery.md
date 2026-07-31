@@ -3,7 +3,7 @@
 > Reader: anyone being introduced to the truth ledger (presentation audience, new collaborator) | Enables: understanding the machinery well enough to trust its gates and file claims/issues correctly | Update-trigger: a consumed template version changes fold semantics, gates, or verbs
 
 Presentation-friendly diagrams of how the truth ledger works. Source of
-truth for semantics: `.truth/README.md` and the ADRs in `docs/adr/`.
+truth for semantics: `.truth/README.md` and the ADRs in `docs/adr/truth/`.
 GitHub renders these natively; for slides, paste each block into any
 mermaid renderer (e.g. mermaid.live).
 
@@ -97,6 +97,80 @@ stateDiagram-v2
 
 **Why it matters:** facts decay automatically. Nobody has to remember
 to distrust old knowledge — the ledger forgets *for* you, loudly.
+
+### Filing hygiene & aftermath — rules earned in consumer production
+
+**The tail-variation rule (2026-07-27):** claim
+families filed as a batch (symbol pins, sentinel pairs) must vary their
+texts beyond the distinguishing token — a shared boilerplate tail can
+push two sibling claims over the ADR-018 near-duplicate threshold and
+the gate refuses the batch midway (observed at jaccard 0.617 on the
+door_width × drawer_front_width pin pair before their tails were
+diversified).
+
+**Pre-scan batch texts mechanically:** before filing a claim family,
+run the CLI's own quantifier and jaccard functions over every text —
+don't eyeball it. ADR-007 matches PHRASES as well as tokens ("the
+project" fires even through an apostrophe), and the ADR-018 threshold
+is measured against the *active* claim set, not guessed against the
+sibling you happen to be looking at.
+
+**Retraction citation sweep:** before recommending or executing a
+retraction, grep the whole corpus — specs, docs, use-cases — for the
+id. A retracted id cited by any spec blocks every spec commit via the
+health gate; swap the citations to the successor claim FIRST, then
+retract.
+
+**The doc↔claim two-commit dance:** when a doc must cite a claim that
+in turn watches that doc, commit the doc citing the claim by TITLE
+first, file the claim (its paths are now tracked), then a second
+commit swaps the title for the id. Filing before the content commit is
+either refused (INV-M) or restales at birth.
+
+**Version-pin divergences are genuine:** when a pinned version string
+is superseded by a release, the FACT changed, not the measuring recipe
+— diverge without `--mechanical`, and file a successor claim pinned to
+the new version.
+
+**Copier-managed files:** a consumer-local edit to a template-managed
+file must be upstreamed into the template at the next release, or the
+next `copier update` conflicts on it. The tail-variation rule above
+took exactly that path — earned in a consumer, promoted here.
+
+**Batch execution hygiene:** file claim batches through argv-array
+drivers, never shell-interpolated loops — shell echo can rewrite
+backslash escapes inside evidence commands. And after a union-merge
+pull, commit the reaffirm agrees before pushing.
+
+### The authoring loop — who does what, in which order
+
+The ledger's refusals assume a division of labor. The shape that has
+held up in consumer production (dozens of feature and release cycles)
+uses four roles — human, agent, or a mix; the roles matter, not the
+runner:
+
+1. **An implementing worker**, fresh context, writes the code, tests,
+   and docs. It never commits and never writes the ledger — its output
+   is a working tree and a report.
+2. **An adversarial reviewer**, fresh context, attacks the change
+   BEFORE anything is committed — the ledger and every append-only
+   record forgive nothing after. Arm it with the CLI's own gate
+   functions (quantifier, jaccard, screen) and let it run two-state
+   tests on scratch copies, never on the tree.
+3. **An orchestrator** alone re-runs the suites, commits the CONTENT
+   first (INV-M refuses untracked watch paths, and a claim filed
+   before its watched content lands restales at birth), then files
+   the claims, then runs scan and reaffirm in a fresh session.
+4. **Verifiers**, one per dispatch, never the author (the ADR-010
+   refusal is structural, but the habit matters more than the gate).
+   They parallelize safely — ledger appends are single-write.
+
+Close with a separate `ledger:` commit, pull before push. Two triggers
+are not optional: an adversarial review for every feature or release
+(each one in production has caught something the suites did not), and
+a verifier dispatch IMMEDIATELY for freshly filed claims — reaffirm
+skips the never-agreed, so an unverified claim's first restale bricks
+it. Mismatches always go to a dispatch judgment, never batch-agreed.
 
 ---
 
