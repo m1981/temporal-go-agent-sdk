@@ -115,7 +115,7 @@ project" fires even through an apostrophe), and the ADR-018 threshold
 is measured against the *active* claim set, not guessed against the
 sibling you happen to be looking at.
 
-**Retraction citation sweep:** before recommending or executing a
+**Retraction citation sweep** (mechanized since v0.9.22 -- ADR-036 refuses the tombstone with exit 6 while scope-covered files cite the id, and `truth citations` is the preflight; the rule below remains the WHY and covers corpora outside your citation-scope)**:** before recommending or executing a
 retraction, grep the whole corpus — specs, docs, use-cases — for the
 id. A retracted id cited by any spec blocks every spec commit via the
 health gate; swap the citations to the successor claim FIRST, then

@@ -1,0 +1,22 @@
+# Generated-artifact watch list (ADR-037). One CLI glob per line
+# (the truth glob grammar: `*`/`?` stop at `/`, `**` spans -- these are
+# NEVER git pathspecs, and a line starting ':', '-' or '!' is refused).
+#
+# A claim watching a path matched here is REFUSED at intake: a watch on
+# a generated file restales on every regeneration -- watch the SOURCE
+# the generator reads instead, or file with
+#   --generated-ok "<why the artifact itself is the fact>"
+# (stored, counted, and decaying per ADR-032 so the judgment is
+# re-asked).
+#
+# The template ships this list EMPTY: which artifacts are generated is
+# a per-repository fact the template cannot know. A committed empty
+# list means "nothing here is generated" -- conscious policy, silent.
+# Deleting the file instead leaves the check dark (one advisory line
+# per path filing says so). This file is CONSUMER-OWNED: `copier
+# update` never overwrites it (_skip_if_exists).
+#
+# Examples:
+#   dist/**
+#   docs/api/generated/**
+#   exercises/*/generated/**

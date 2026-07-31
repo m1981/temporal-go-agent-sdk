@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""truth v0.9.21 -- append-only claims ledger with a native work kernel.
+"""truth v0.9.25 -- append-only claims ledger with a native work kernel.
 
 Facts are appended as JSONL records to .truth/claims.jsonl (INV-A:
 append-only, commit-gated by scripts/check-truth.sh); every status is
@@ -36,6 +36,29 @@ from datetime import datetime, timedelta, timezone
 
 LEDGER_REL = ".truth/claims.jsonl"
 PROMPT_REL = "prompts/truth-verifier.md"
+# ADR-036: tombstone citation gate. The scope file is consumer POLICY
+# (SI-4): absent -> the built-in default below applies with a notice;
+# committed-empty -> consciously nothing (silent). The refusal exit code
+# is distinct so a sweep driver can tell "cited, swap first" from
+# unknown-id / ack-mismatch / unavailable, which all exit 1 (the
+# impact-3/4 / baseline-5 precedent).
+CITATION_SCOPE_REL = ".truth/citation-scope"
+CITATION_SCOPE_DEFAULT = ("docs/specs/**",)
+CITATIONS_EXIT_CITED = 6
+# ADR-037: which artifacts are GENERATED is a per-repository fact the
+# template cannot know -- consumer policy (SI-4), shipped EMPTY with a
+# header (committed-empty = consciously nothing, silent; ABSENT = the
+# check is dark, one advisory line says so).
+GENERATED_PATHS_REL = ".truth/generated-paths"
+# ADR-039: blast forecast. Window and cold-start floor change only with
+# the BF faults; the EFFECTIVE floor self-calibrates per repo (P90 of
+# stored forecasts over live path-claims once enough exist) because a
+# per-repo percentile stored as a universal constant is a category
+# error -- at the adoption review the constant floor would have printed
+# on ~85% of this repo's own filings (tr-c3087292).
+BLAST_WINDOW_DAYS = 30
+BLAST_ADVISORY_FLOOR = 15
+BLAST_MIN_OBSERVATIONS = 20
 EVIDENCE_CLASSES = ("VERIFIED", "INFERRED", "UNVERIFIED")
 TIERS = ("P0", "P1", "P2")
 VERDICTS = ("agree", "diverge", "cannot_verify", "retracted")
@@ -637,11 +660,130 @@ def render_advisory_block(messages):
             lines.append(f"{ADVISORY_PREFIX} {ln}")
     return "\n".join(lines) if lines else None
 
+# --- ADR-038: the dirty-watch advisory ------------------------------------
+def parse_porcelain_z(out):
+    """Pure: `git status --porcelain=v1 -z` fields -> [(xy, paths)].
+    NUL-separated, UNQUOTED (SI-2: default quotepath would octal-quote
+    non-ASCII names into match_paths-invisibility); a rename/copy entry
+    (X or Y in RC) is followed by ONE extra NUL field, the source path
+    -- both paths belong to the entry."""
+    fields = [f for f in out.split("\x00")]
+    entries, i = [], 0
+    while i < len(fields):
+        f = fields[i]
+        i += 1
+        if len(f) < 4 or f[2] != " ":
+            continue
+        xy, path = f[:2], f[3:]
+        paths = [path]
+        if ("R" in xy or "C" in xy) and i < len(fields) and fields[i]:
+            paths.append(fields[i])
+            i += 1
+        entries.append((xy, paths))
+    return entries
+
+def dirty_watch(entries, watch_patterns):
+    """Pure (ADR-038): the watched paths that are dirty in the working
+    tree. Dirtiness is STRUCTURAL -- any XY other than clean ('  ') or
+    ignored ('!!') counts, which covers the unmerged states (UU et al.:
+    dirty precisely during conflict resolution, the pilot's QB-011
+    scenario) that a letter whitelist would miss. Untracked entries
+    ('??') count too: INV-M refuses untracked LITERAL watches, but a
+    glob legitimately watches an empty-for-now namespace, and an
+    untracked file under it is exactly the restale-at-birth vector.
+    Renames match on either side. Returns sorted unique paths."""
+    hits = set()
+    for xy, paths in entries:
+        if xy in ("  ", "!!"):
+            continue
+        for p in paths:
+            if match_paths(p, watch_patterns):
+                hits.add(p)
+    return sorted(hits)
+
+# --- ADR-039: blast forecast (pure half) ----------------------------------
+def parse_name_log(out):
+    """Pure: `git log --format=%x01%H --name-only` output -> a list of
+    (commit, frozenset(files)). Chunks are split on the \\x01 marker;
+    quotepath=off at the shell edge keeps names raw (SI-2). A newline
+    inside a filename breaks the line parse -- accepted residual,
+    disclosed in ADR-039."""
+    hist = []
+    for chunk in out.split("\x01"):
+        lines = [ln for ln in chunk.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        hist.append((lines[0], frozenset(lines[1:])))
+    return hist
+
+def blast_forecast(paths, history):
+    """Pure (ADR-039): distinct commits in the window touching any
+    watched path -- an UPPER BOUND on stalings, not an expectation (a
+    claim stales only from live, so N commits between re-verifications
+    produce ONE staling; the pilot's hottest claim showed 15
+    invalidations against 14 re-agrees). Matches the deduplicated
+    distinct-file set once, then counts commits by set intersection."""
+    if not paths or not history:
+        return 0
+    all_files = set().union(*(files for _, files in history))
+    watched = {f for f in all_files if match_paths(f, paths)}
+    if not watched:
+        return 0
+    return sum(1 for _, files in history if files & watched)
+
+def effective_blast_floor(claims):
+    """Pure (ADR-039): the advisory floor, self-calibrated -- P90 of
+    stored blast_forecast values over LIVE path-claims once >=
+    BLAST_MIN_OBSERVATIONS exist; the constant is the cold-start
+    fallback only. Returns (floor, source)."""
+    vals = sorted(
+        e["claim"]["payload"]["blast_forecast"] for e in claims.values()
+        if e["status"] == "live"
+        and isinstance(e["claim"]["payload"].get("blast_forecast"), int)
+        and not isinstance(e["claim"]["payload"].get("blast_forecast"), bool))
+    if len(vals) >= BLAST_MIN_OBSERVATIONS:
+        # clamped to >= 1: an all-cold corpus must not calibrate the
+        # floor to 0 and flag stone-cold watches as hot (R5 review, F2)
+        return max(1, vals[max(0, int(len(vals) * 0.9) - 1)]), "calibrated"
+    return BLAST_ADVISORY_FLOOR, "fallback"
+
+def blast_report(events, folded=None):
+    """ADR-039: the churn instrument -- observed invalidations vs
+    forecast-at-filing per path-claim (top 5 by observed), the per-path
+    staler ranking read from invalidation `touched` lists (no git work),
+    and the effective floor. Pure fold consumer; shares the fold."""
+    claims, _ = folded if folded is not None else fold(events)
+    inval_counts, staler = {}, {}
+    for _, ev in events:
+        if ev.get("kind") != "invalidation":
+            continue
+        p = ev.get("payload") or {}
+        cid = p.get("claim")
+        inval_counts[cid] = inval_counts.get(cid, 0) + 1
+        for t in p.get("touched") or []:
+            staler[t] = staler.get(t, 0) + 1
+    rows = []
+    for cid, e in claims.items():
+        if not e["claim"]["payload"].get("evidence_paths"):
+            continue
+        pf = e["claim"]["payload"].get("blast_forecast")
+        obs = inval_counts.get(cid, 0)
+        if pf is not None or obs:
+            rows.append({"claim": cid, "observed": obs, "forecast": pf})
+    rows.sort(key=lambda r: (-r["observed"], r["claim"]))
+    floor, src = effective_blast_floor(claims)
+    return {"rows": rows[:5],
+            "staler_ranking": [{"path": p, "invalidations": n} for p, n
+                               in sorted(staler.items(),
+                                         key=lambda kv: (-kv[1], kv[0]))[:5]],
+            "effective_floor": floor, "floor_source": src}
+
 def intake_advisories(events, tier, ttl_days_arg, scope_ok, evidence_class,
-                      payload):
+                      payload, generated_ok=None, claims=None):
     """The post-append advisory set shared by `claim` and `done --claim`
     (ADR-034): FS-1 half-life note (moved post-append -- it advises, so
-    it rides the block), ADR-032 default-expiry notice, and the v0.9.11
+    it rides the block), ADR-032 default-expiry notice, the ADR-037
+    recipe lints and generated-list-absent notice, and the v0.9.11
     hollow-VERIFIED exit warning. Returns the non-None messages, table
     order; the renderer prefixes and escapes."""
     msgs = []
@@ -654,8 +796,69 @@ def intake_advisories(events, tier, ttl_days_arg, scope_ok, evidence_class,
             msgs.append(f"ledger median half-life for {tier}: {median}d; "
                         f"you chose {ttl_days_arg}d (FS-1 suggestion, "
                         "not a gate)")
-    _, _, decay_notice = override_decay(scope_ok, ttl_days_arg)
+    stored_gen = payload.get("generated_ok_basis")
+    flag = "--scope-ok" if scope_ok else "--generated-ok"
+    _, _, decay_notice = override_decay(scope_ok or stored_gen,
+                                        ttl_days_arg, flag=flag)
     msgs.append(decay_notice)
+    if generated_ok and not stored_gen:
+        # ADR-037: a stated override that matched nothing must not drop
+        # silently (and it does not decay -- nothing was recorded).
+        msgs.append("--generated-ok stated but the watch matched nothing "
+                    f"on {GENERATED_PATHS_REL} -- the basis was NOT "
+                    "stored (ADR-037); drop the flag or fix the list")
+    # ADR-037: recipe lints on the recorded command (pure, screen-token
+    # stream), and the generated-list-absent notice for path claims --
+    # the check is dark until the consumer commits the list; a
+    # committed-EMPTY list is conscious policy and stays silent (SI-4).
+    msgs.extend(recipe_lints((payload.get("evidence") or {}).get("command")))
+    if payload.get("evidence_paths") \
+            and load_generated_globs()[1] == "absent":
+        msgs.append(f"no {GENERATED_PATHS_REL} -- the generated-artifact "
+                    "check is dark; commit the list (empty is a conscious "
+                    "'nothing is generated') to arm or silence this "
+                    "(ADR-037)")
+    # ADR-038: the dirty-watch advisory -- a claim filed before its
+    # watched content lands restales at birth (the two-commit dance's
+    # hazard, made visible at the only cheap moment). Advisory only:
+    # filing ahead of the content commit is legitimate when the author
+    # intends an immediate re-verify, and a refusal here would teach
+    # `git stash` as its bypass.
+    if payload.get("evidence_paths"):
+        status = working_tree_status()
+        if status:
+            for p in dirty_watch(parse_porcelain_z(status),
+                                 payload["evidence_paths"]):
+                msgs.append(f"dirty watch: {p} has uncommitted changes -- "
+                            "this claim stales on the commit that lands "
+                            "them (restale-at-birth, ADR-038). Commit the "
+                            "content first, then file.")
+    # ADR-039: the blast advisory -- an upper bound on stalings, voiced
+    # only at or above the (self-calibrating) floor; shallow/unavailable
+    # history is voiced loudly instead of quietly reading cold.
+    if payload.get("evidence_paths"):
+        f = payload.get("blast_forecast")
+        if f is None:
+            shallow = False
+            try:
+                sh = subprocess.run(
+                    ["git", "rev-parse", "--is-shallow-repository"],
+                    capture_output=True, text=True, cwd=repo_root())
+                shallow = sh.returncode == 0 and sh.stdout.strip() == "true"
+            except (OSError, ValueError):
+                pass
+            msgs.append("blast: shallow history -- a forecast would be a "
+                        "floor, not a bound; skipped (ADR-039)" if shallow
+                        else "blast: history unavailable -- forecast "
+                             "skipped (ADR-039)")
+        elif claims is not None:
+            floor, src = effective_blast_floor(claims)
+            if f >= floor:
+                msgs.append(f"blast: watch matched {f} commits in the "
+                            f"last {BLAST_WINDOW_DAYS}d -- an upper bound "
+                            "on stalings; narrower --paths cut "
+                            f"re-verification load (ADR-039; floor {floor}"
+                            f", {src})")
     # field-notes-batch-m item 2 remedy: the filing already succeeded and
     # its exit code stands; the captured intake returncode (first run --
     # already in the evidence capsule, never re-run) just gets a voice.
@@ -750,7 +953,7 @@ def quantifier_scope_conflict(text, evidence_cmd):
         return None
     return (q, s)
 
-def override_decay(scope_basis, ttl_days):
+def override_decay(scope_basis, ttl_days, flag="--scope-ok"):
     """ADR-032: a --scope-ok override (scope_basis, ADR-007) filed WITHOUT
     an explicit --ttl-days decays -- it is stamped a default shelf life so
     the scope judgment cannot rot silently: when the default TTL lapses the
@@ -773,15 +976,93 @@ def override_decay(scope_basis, ttl_days):
     --ttl-days is the visible opt-out (ADR-032 exclusions)."""
     if scope_basis and ttl_days is None:
         return (DEFAULT_OVERRIDE_TTL_DAYS, True,
-                "--scope-ok override filed with no --ttl-days -- "
+                f"{flag} override filed with no --ttl-days -- "
                 f"stamped a default {DEFAULT_OVERRIDE_TTL_DAYS}-day expiry "
-                "(ADR-032) so the scope judgment is re-asked when it "
+                "(ADR-032) so the override judgment is re-asked when it "
                 "lapses. Pass an explicit --ttl-days (a large value is the "
                 "visible opt-out) to choose a different shelf life.")
     return (ttl_days, False, None)
 
 _SCREEN_SEPARATORS = frozenset((";", "|", "||", "&&", "&"))
 _SCREEN_PUNCT = frozenset("();<>|&")
+
+def _evidence_toks(cmd):
+    """The ONE screen-side tokenization of an evidence command (shlex
+    posix + punctuation mode, whitespace_split) -- shared by the ADR-009
+    screen and the ADR-037 recipe lints. A second screen-side parser is
+    forbidden (the F1/F5 drift lesson; a whitespace splitter would be
+    gameable by quote-splitting, 'v0.9''.8'). Returns (toks, err)."""
+    lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    try:
+        return list(lex), None
+    except ValueError as e:
+        return None, f"unparseable command ({e}) (ADR-009)"
+
+# ADR-037: recipe-lint lexicons. Shapes and carve-outs change only with
+# the RC-canary faults (the ADR-007 constants-with-faults precedent).
+GREP_FAMILY = frozenset(("grep", "rg", "egrep", "fgrep", "zgrep"))
+VERSION_SHAPE_RE = re.compile(r"\bv?\d+\.\d+(?:\.\d+)?\b")
+DATE_SHAPE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+SCHEMA_ID_RE = re.compile(r"truth-ledger-record\.v\d")
+FROZEN_DATE_RE = re.compile(r"(?:Accepted|Amended|Date:)\s*\(?\d{4}-")
+
+def recipe_lints(cmd):
+    """ADR-037: warnings, never refusals (a gate refusing legitimate
+    filings teaches its own bypass -- ADR-014's confused-deputy lesson)
+    about evidence recipes with a known expiry. Three carve-outs, each a
+    measured legitimate-invariant class: a token containing '/' is
+    path-context (filenames legitimately carry versions and dates), the
+    schema-$id shape is a deliberately release-independent anchor (the
+    very fix of the tr-22853f21 defect), and a frozen-record date
+    (Accepted/Amended/Date headers) never changes. Pure; consumes the
+    screen's own token stream."""
+    if not cmd:
+        return []
+    toks, err = _evidence_toks(cmd)
+    if not toks or err:
+        return []
+    msgs = []
+    program, expecting, n_flagged = None, True, False
+    for t in toks:
+        if t in _SCREEN_SEPARATORS:
+            expecting, program = True, None
+            continue
+        if t and set(t) <= _SCREEN_PUNCT:
+            continue
+        if expecting:
+            program, expecting = t, False
+            continue
+        # Per-token: a literal '-n' PATTERN (grep -e -n) false-fires;
+        # warning-only, accepted (arg-value parsing is the screen's own
+        # stated non-goal).
+        if program in GREP_FAMILY and t in ("-n", "--line-number") \
+                and not n_flagged:
+            n_flagged = True
+            msgs.append("recipe: -n makes the output shift under "
+                        "unrelated edits -- mechanical divergence on the "
+                        "first insertion above the match (ADR-012/"
+                        "ADR-037). Drop -n unless the line number is the "
+                        "fact.")
+            continue
+        if "/" in t or SCHEMA_ID_RE.search(t):
+            continue
+        m = VERSION_SHAPE_RE.search(t)
+        if m:
+            msgs.append(f"recipe: {m.group(0)!r} is a volatile literal "
+                        "with a release-shaped expiry (ADR-037) -- anchor "
+                        "to an invariant (a def/test name, an ADR id, a "
+                        "FAULT tag) or file with --ttl-days. A deliberate "
+                        "version pin is legitimate; its divergence at the "
+                        "next bump is genuine, successor material.")
+            continue
+        d = DATE_SHAPE_RE.search(t)
+        if d and not FROZEN_DATE_RE.search(t):
+            msgs.append(f"recipe: {d.group(0)!r} is a date-shaped "
+                        "literal with a calendar expiry (ADR-037) -- "
+                        "anchor to an invariant unless the date names a "
+                        "frozen record.")
+    return msgs
 
 def screen_evidence_command(cmd, allowlist, allow_rel=EVIDENCE_ALLOW_REL,
                             missing_tail=None, unlisted_hint=None,
@@ -826,12 +1107,9 @@ def screen_evidence_command(cmd, allowlist, allow_rel=EVIDENCE_ALLOW_REL,
                 "separator to the executing shell (a newline is /bin/sh's "
                 "statement terminator); evidence commands must be a single "
                 "printable line (ADR-021)")
-    lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
-    lex.whitespace_split = True
-    try:
-        toks = list(lex)
-    except ValueError as e:
-        return f"unparseable command ({e}) (ADR-009)"
+    toks, tok_err = _evidence_toks(cmd)
+    if tok_err:
+        return tok_err
     if not toks:
         return "empty command (ADR-009)"
     expecting_program = True
@@ -1163,13 +1441,15 @@ def override_report(events, now, folded=None):
     del now  # signature parity; the report reads records, not the clock
     claims, _ = folded if folded is not None else fold(events)
     scope_filings = overridden_dupes = screened_false = 0
-    exit_overrides = hollow_warned = 0
+    exit_overrides = hollow_warned = generated_overrides = 0
     max_scope_ttl = None
     for e in claims.values():
         p = e["claim"]["payload"]
         # ADR-035: exit-override count (CC-2 single home) plus the
         # warned-population denominator -- a recorded non-zero exit with
         # no stated basis is the negation-path/pre-R1 warned class.
+        if p.get("generated_ok_basis"):
+            generated_overrides += 1
         if p.get("evidence_exit_basis"):
             exit_overrides += 1
         elif (p.get("evidence") or {}).get("returncode"):
@@ -1184,6 +1464,13 @@ def override_report(events, now, folded=None):
             overridden_dupes += 1
         if (p.get("evidence") or {}).get("screened") is False:
             screened_false += 1
+    # ADR-036: deliberate-orphaning count (CC-2 single home) -- verdict
+    # and issue-tombstone sides together; read from raw events (a
+    # retracted claim's verdict is what carries it).
+    orphan_filings = sum(
+        1 for _, ev in events
+        if ev.get("kind") in ("verdict", "issue_event")
+        and (ev.get("payload") or {}).get("orphan_basis"))
     decay_expiries = 0
     for _, ev in events:
         if ev.get("kind") != "invalidation":
@@ -1217,6 +1504,8 @@ def override_report(events, now, folded=None):
             "screened_false_filings": screened_false,
             "evidence_exit_filings": exit_overrides,
             "hollow_warned": hollow_warned,
+            "orphan_filings": orphan_filings,
+            "generated_ok_filings": generated_overrides,
             "max_scope_ttl_days": max_scope_ttl,
             "repeats": repeats}
 
@@ -1682,6 +1971,27 @@ def validate_events(events):
             if "scope_basis" in p and not p["scope_basis"]:
                 errors.append(f"line {n}: empty scope_basis (ADR-007: the "
                               "override carries a sentence, not a boolean)")
+            # ADR-039: blast_forecast is a non-negative integer stamped
+            # at intake; validate tolerates its absence (legacy).
+            if "blast_forecast" in p:
+                bf = p["blast_forecast"]
+                if isinstance(bf, bool) or not isinstance(bf, int) or bf < 0:
+                    errors.append(f"line {n}: blast_forecast must be a "
+                                  "non-negative integer (ADR-039)")
+            # ADR-037: generated_ok_basis is a sentence and only path
+            # claims can carry it. Present-but-EMPTY paths beside a basis
+            # is refused; an absent key is tolerated (the FS-2 mutant
+            # generator dels fields, and the two contract surfaces must
+            # agree on every derived mutant -- the ADR-035 returncode
+            # tolerance pattern).
+            if "generated_ok_basis" in p:
+                if not p["generated_ok_basis"]:
+                    errors.append(f"line {n}: empty generated_ok_basis "
+                                  "(ADR-037)")
+                elif "evidence_paths" in p and not p["evidence_paths"]:
+                    errors.append(f"line {n}: generated_ok_basis beside "
+                                  "empty evidence_paths -- nothing was "
+                                  "watched, nothing to excuse (ADR-037)")
             # ADR-035: only a failing command has anything to excuse. A
             # basis beside a recorded exit of 0 is schema noise (X5); a
             # legacy capsule lacking returncode is tolerated (recheck
@@ -1755,6 +2065,18 @@ def validate_events(events):
                               "SHA prefix of at least 7 chars when present "
                               "(ADR-027, schema minLength 7)")
         elif kind == "verdict":
+            # ADR-036: orphan_basis is a sentence, and only the terminal
+            # verb creates orphans -- a basis on any other verdict is
+            # schema noise (mirror-only cross-field rule; the schema
+            # stays necessary-not-sufficient, ADR-027).
+            if "orphan_basis" in p:
+                if not p["orphan_basis"]:
+                    errors.append(f"line {n}: empty orphan_basis (ADR-036: "
+                                  "the override carries a sentence)")
+                elif p.get("verdict") != "retracted":
+                    errors.append(f"line {n}: orphan_basis on a "
+                                  f"{p.get('verdict')!r} verdict -- only a "
+                                  "retraction orphans citations (ADR-036)")
             if p.get("verdict") not in VERDICTS or not p.get("claim") \
                     or not p.get("basis"):
                 errors.append(f"line {n}: malformed verdict")
@@ -1824,6 +2146,16 @@ def validate_events(events):
                 errors.append(f"line {n}: issue_event ref not wk-hex8")
             elif p.get("event") in ("closed", "cancelled") and not p.get("basis"):
                 errors.append(f"line {n}: {p['event']} issue_event missing basis")
+            # ADR-036: orphan_basis only on the issue tombstone
+            # (mirror-only cross-field rule, like the verdict side).
+            if "orphan_basis" in p:
+                if not p["orphan_basis"]:
+                    errors.append(f"line {n}: empty orphan_basis (ADR-036)")
+                elif p.get("event") != "cancelled":
+                    errors.append(f"line {n}: orphan_basis on a "
+                                  f"{p.get('event')!r} issue_event -- only "
+                                  "a cancellation orphans citations "
+                                  "(ADR-036)")
             if "accept" in p:
                 acc = p["accept"]
                 if not isinstance(acc, dict) \
@@ -2115,8 +2447,19 @@ def _gate_scope_decay(ctx):
     # life BEFORE the class precheck reads ttl_days, so the effective
     # ttl rides the ordinary INV-B/ADR-019 machinery untouched; the
     # notice is voiced post-append through the CC-1 advisory block.
+    # ADR-037 extends the decay to --generated-ok (decay INCLUDED, the
+    # ADR-032 exclusions form: "this path is generated" rots as build
+    # systems change, and the re-ask is exactly the scan->re-file loop).
+    # Keyed on the STORED generated basis, never the raw flag: a
+    # --generated-ok that matched nothing is dropped (and voiced), and
+    # a dropped override must not decay -- ADR-032 re-asks a RECORDED
+    # judgment (the R3 adversarial review's catch). This row therefore
+    # runs AFTER the generated gate in the table.
+    gen_stored = ctx.get("payload_generated_basis")
+    flag = "--scope-ok" if ctx["scope_basis"] else "--generated-ok"
     ctx["ttl_days"], ctx["ttl_default"], _ = \
-        override_decay(ctx["scope_basis"], ctx["ttl_days"])
+        override_decay(ctx["scope_basis"] or gen_stored,
+                       ctx["ttl_days"], flag=flag)
     return None
 
 def _gate_inv_m(ctx):
@@ -2154,6 +2497,50 @@ def _gate_inv_m(ctx):
                 "pattern like 'dir/**' or 'dir/*.py'.")
     return None
 
+def load_generated_globs():
+    """Shell (ADR-037/SI-4): the consumer's generated-artifact globs.
+    Returns (globs, source), source in {'file','empty','absent'}.
+    utf-8-sig; pathspec-magic line starts refused (SI-1)."""
+    path = os.path.join(repo_root(), GENERATED_PATHS_REL)
+    if not os.path.exists(path):
+        return [], "absent"
+    globs = []
+    with open(path, encoding="utf-8-sig") as f:
+        for i, line in enumerate(f, 1):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if s[0] in ":-!":
+                sys.exit(f"truth: {GENERATED_PATHS_REL} line {i} starts "
+                         f"with {s[0]!r} -- pathspec magic is refused; "
+                         "the list holds CLI globs (ADR-037/SI-1)")
+            globs.append(s)
+    return globs, ("file" if globs else "empty")
+
+def _gate_generated(ctx):
+    # ADR-037: a watch on a generated artifact restales on every
+    # regeneration -- refused for ANY evidence class carrying paths
+    # (an INFERRED claim restales identically; the INV-M stance).
+    if not ctx["paths"]:
+        return None
+    globs, source = load_generated_globs()
+    ctx["generated_source"] = source
+    if source != "file":
+        return None
+    hits = sorted(p for p in ctx["paths"]
+                  if any(match_paths(p, [g]) or p == g for g in globs))
+    if not hits:
+        return None
+    if ctx["generated_basis"]:
+        ctx["payload_generated_basis"] = ctx["generated_basis"]
+        return None
+    return ("truth: --paths entry matches the committed generated-"
+            f"artifact list ({GENERATED_PATHS_REL}): {hits!r} -- a watch "
+            "on a generated file restales on every regeneration "
+            "(ADR-037). Watch the SOURCE the generator reads, or state "
+            "why the artifact itself is the fact: --generated-ok "
+            "\"<sentence>\".")
+
 def _gate_class_precheck(ctx):
     if ctx["evidence_class"] == "VERIFIED":
         return verified_intake_error(ctx["evidence_cmd"], ctx["paths"],
@@ -2176,12 +2563,26 @@ def _gate_evidence_exit(ctx):
         ctx["payload"]["evidence_exit_basis"] = ctx["evidence_exit_basis"]
     return None
 
+def _gate_blast(ctx):
+    # ADR-039 transform row -- never refuses. Stamps the forecast so
+    # the stats blast section can compare observed-vs-forecast later.
+    # Shallow or unavailable history stores NOTHING (a floor is not a
+    # bound); the advisory block voices why, post-append.
+    if not ctx["paths"]:
+        return None
+    history, state = blast_history()
+    if state == "ok":
+        ctx["blast_forecast"] = blast_forecast(ctx["paths"], history)
+    return None
+
 INTAKE_GATES = (
     ("pre-execution", "text-nonempty", _gate_text_nonempty),
     ("pre-execution", "near-duplicate-g8", _gate_duplicate),
     ("pre-execution", "quantifier-scope-adr007", _gate_quantifier_scope),
-    ("pre-execution", "scope-decay-adr032", _gate_scope_decay),
     ("pre-execution", "paths-inv-m", _gate_inv_m),
+    ("pre-execution", "generated-paths-adr037", _gate_generated),
+    ("pre-execution", "scope-decay-adr032", _gate_scope_decay),
+    ("pre-execution", "blast-forecast-adr039", _gate_blast),
     ("pre-execution", "class-precheck", _gate_class_precheck),
     ("post-execution", "evidence-exit-adr035", _gate_evidence_exit),
     # further post-execution rows land with the linter and blast ADRs
@@ -2201,7 +2602,7 @@ def run_intake_stage(stage, ctx):
 def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
                         ttl_days, basis, single_run, duplicate_ok, claims,
                         scope_basis=None, unsafe_ok=False,
-                        evidence_exit_basis=None):
+                        evidence_exit_basis=None, generated_basis=None):
     """Full claim intake, driven by the ADR-034 staged gate table --
     WITHOUT appending. Shared by `claim` and `done --claim` so
     claim-at-death goes through the identical intake, and so `done` can
@@ -2213,6 +2614,7 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
            "claims": claims, "duplicate_ok": duplicate_ok,
            "scope_basis": scope_basis,
            "evidence_exit_basis": evidence_exit_basis,
+           "generated_basis": generated_basis,
            "head": head_commit() if evidence_class == "VERIFIED" else None,
            "overridden_duplicates": [], "ttl_default": False}
     run_intake_stage("pre-execution", ctx)
@@ -2228,6 +2630,10 @@ def build_claim_payload(text, evidence_class, evidence_cmd, paths_csv, tier,
         payload["ttl_default"] = True
     if ctx["overridden_duplicates"]:
         payload["overridden_duplicates"] = ctx["overridden_duplicates"]
+    if ctx.get("payload_generated_basis"):
+        payload["generated_ok_basis"] = ctx["payload_generated_basis"]
+    if ctx.get("blast_forecast") is not None:
+        payload["blast_forecast"] = ctx["blast_forecast"]  # ADR-039
 
     if evidence_class == "VERIFIED":
         # -- execution boundary (ADR-029): screen, then double-run.
@@ -2267,7 +2673,7 @@ def cmd_claim(a):
                                   a.paths, a.tier, a.ttl_days, a.basis,
                                   a.single_run, a.duplicate_ok, claims,
                                   a.scope_ok, a.evidence_unsafe_ok,
-                                  a.evidence_exit_ok)
+                                  a.evidence_exit_ok, a.generated_ok)
     if a.concern:
         # stored sorted+deduplicated: canonical form keeps the record's
         # canonical serialization (ADR-016 fold key) order-independent of
@@ -2275,7 +2681,9 @@ def cmd_claim(a):
         payload["concerns"] = sorted(set(a.concern))
     rec = append_record("claim", payload)
     advisories = intake_advisories(events, a.tier, a.ttl_days, a.scope_ok,
-                                   a.evidence_class, payload)
+                                   a.evidence_class, payload,
+                                   generated_ok=a.generated_ok,
+                                   claims=claims)
     if a.json:
         out = dict(rec)
         if advisories:
@@ -2290,6 +2698,181 @@ def cmd_claim(a):
     block = render_advisory_block(advisories)
     if block:
         print(block, file=sys.stderr)
+
+# --- ADR-038: the dirty-watch shell probe (SHELL -- subprocess) -----------
+def working_tree_status():
+    """SI-2: NUL-separated unquoted status at the repo root. Returns
+    raw text or None when git cannot answer -- incl. an undecodable
+    byte in some unrelated untracked filename (text=True decodes
+    strictly; UnicodeDecodeError is a ValueError -- the R4 adversarial
+    review's catch: the advisory stays silent, it never gates and never
+    tracebacks past a successful append)."""
+    try:
+        # -uall: expand untracked DIRECTORIES into their files (default
+        # porcelain collapses them to 'ns/', hiding which file under a
+        # glob watch is the restale-at-birth vector)
+        r = subprocess.run(["git", "status", "--porcelain=v1", "-z",
+                            "--untracked-files=all"],
+                           capture_output=True, text=True, cwd=repo_root())
+    except (OSError, ValueError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+# --- ADR-039: blast history (SHELL -- subprocess) -------------------------
+def blast_history():
+    """SI-2: (history, state), state in {'ok','shallow','unavailable'}.
+    Shallow clones truncate `git log` SILENTLY -- a quietly-cold
+    forecast would be the exact silent skip the design forbids, so
+    shallowness is probed first and nothing is stored for it (a floor
+    is not a bound). quotepath=off keeps names raw for match_paths."""
+    try:
+        sh = subprocess.run(["git", "rev-parse", "--is-shallow-repository"],
+                            capture_output=True, text=True, cwd=repo_root())
+        if sh.returncode == 0 and sh.stdout.strip() == "true":
+            return None, "shallow"
+        # --since-as-FILTER, never --since: plain --since STOPS the
+        # traversal at the first out-of-window commit, so one backdated
+        # commit near the tip empties the whole log -- a quietly-cold
+        # forecast stored as 0-under-ok, the exact 0-as-unknown ADR-039
+        # forbids (the R5 adversarial review's catch). On git < 2.36
+        # the option errors -> rc != 0 -> the loud unavailable path,
+        # which is the design's preferred failure mode.
+        r = subprocess.run(["git", "-c", "core.quotepath=off", "log",
+                            f"--since-as-filter={BLAST_WINDOW_DAYS}.days",
+                            "--format=%x01%H", "--name-only",
+                            "--no-renames"],
+                           capture_output=True, text=True, cwd=repo_root())
+    except (OSError, ValueError):
+        return None, "unavailable"
+    if r.returncode != 0:
+        return None, "unavailable"  # incl. unborn HEAD (exit 128)
+    return parse_name_log(r.stdout), "ok"
+
+# --- ADR-036: tombstone citation gate -------------------------------------
+def load_citation_scope():
+    """Shell: the consumer's citation-scope policy (SI-4). Returns
+    (globs, source), source in {'file','empty','default'}. utf-8-sig (a
+    BOM must not deaden the first glob); a line starting ':', '-' or '!'
+    is refused -- scope lines are CLI globs filtered by match_paths(),
+    never git pathspecs (SI-1: one ':(exclude)' idiom line would
+    silently invert the sweep to everything-except)."""
+    path = os.path.join(repo_root(), CITATION_SCOPE_REL)
+    if not os.path.exists(path):
+        return list(CITATION_SCOPE_DEFAULT), "default"
+    globs = []
+    with open(path, encoding="utf-8-sig") as f:
+        for i, line in enumerate(f, 1):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if s[0] in ":-!":
+                sys.exit(f"truth: {CITATION_SCOPE_REL} line {i} starts "
+                         f"with {s[0]!r} -- pathspec magic is refused; "
+                         "scope lines are CLI globs (match_paths), never "
+                         "git pathspecs (ADR-036/SI-1)")
+            globs.append(s)
+    return globs, ("file" if globs else "empty")
+
+def citation_grep(cid):
+    """Shell: bare repo-wide `git grep -l -F <cid>` at the repo root
+    (SI-2: a subtree cwd truncates the sweep to rc=1 = 'clean'; no
+    pathspecs ever -- filtering is the core's job). rc contract PINNED:
+    0 = hits, 1 = clean, anything else or spawn failure = unavailable.
+    Returns (paths, None) or (None, reason)."""
+    try:
+        # -z: NUL-separated, UNQUOTED names (SI-2) -- default quotepath
+        # octal-quotes any non-ASCII path, which match_paths can never
+        # match, silently dropping the hit: fail-open on the fail-closed
+        # gate (the R2 adversarial review's catch, TG11). '--' pins cid
+        # to the pattern slot (a dash-leading argument is not an option).
+        r = subprocess.run(["git", "grep", "-z", "-l", "-F", "--", cid],
+                           capture_output=True, text=True, cwd=repo_root())
+    except OSError as e:
+        return None, f"git grep could not run ({e})"
+    if r.returncode == 0:
+        return [p for p in r.stdout.split("\x00") if p], None
+    if r.returncode == 1:
+        return [], None
+    return None, f"git grep exited {r.returncode}"
+
+def citation_block_paths(hits, scope_globs):
+    """Pure (ADR-036): which grep hits actually block -- inside the
+    scope and never the ledger itself (retraction bases legitimately
+    cite predecessors/successors, so an unexcluded ledger would make
+    every second retraction self-blocking). TG4/TG9 pin this."""
+    return sorted(h for h in hits
+                  if h != LEDGER_REL and match_paths(h, scope_globs))
+
+def dead_scope_notice(scope_globs, source, tracked):
+    """Pure (SI-4): a non-empty scope FILE matching zero tracked files
+    is dead policy -- loud, never a silent clean sweep."""
+    if source != "file":
+        return None
+    if any(match_paths(t, scope_globs) for t in tracked):
+        return None
+    return (f"{CITATION_SCOPE_REL} matches zero tracked files -- the "
+            "citation sweep runs against dead scope; fix the globs or "
+            "commit an empty file to consciously disable (ADR-036)")
+
+def citation_sweep(cid, orphan_basis):
+    """Shell orchestration shared by `verdict retracted` and `done
+    --cancel`: voices the SI-4 notices, fails CLOSED on unavailable git
+    (the one earned exception -- the verb is terminal and the human is
+    already mid-ceremony), returns the blocking paths (possibly [])."""
+    globs, source = load_citation_scope()
+    if source == "empty":
+        return []
+    if source == "default":
+        print(f"truth: advisory: no {CITATION_SCOPE_REL} -- the citation "
+              "sweep runs against the built-in default scope "
+              f"({','.join(CITATION_SCOPE_DEFAULT)}); commit the file to "
+              "declare this repo's own (ADR-036)", file=sys.stderr)
+    else:
+        notice = dead_scope_notice(globs, source, tracked_files())
+        if notice:
+            print(f"truth: advisory: {notice}", file=sys.stderr)
+    hits, reason = citation_grep(cid)
+    if reason is not None:
+        if orphan_basis:
+            return []
+        sys.exit(f"truth: cannot verify citations -- {reason}. Retraction "
+                 "is rare and human-gated: run it where the corpus is "
+                 "greppable (ADR-036; fails CLOSED by design)")
+    return citation_block_paths(hits, globs)
+
+def cmd_citations(a):
+    """ADR-036 preflight: read-only, no ceremony. A batch sweep runs one
+    preflight pass, then per-id ceremonial verdicts on the clean set --
+    a multi-id ack stays refused on principle (ADR-011: one typed id
+    authorizes one tombstone). Exit 0 = nothing cited inside the scope;
+    CITATIONS_EXIT_CITED = at least one id is."""
+    globs, source = load_citation_scope()
+    if source == "default":
+        print(f"truth: advisory: no {CITATION_SCOPE_REL} -- sweeping the "
+              f"built-in default scope ({','.join(CITATION_SCOPE_DEFAULT)})",
+              file=sys.stderr)
+    elif source == "file":
+        notice = dead_scope_notice(globs, source, tracked_files())
+        if notice:
+            print(f"truth: advisory: {notice}", file=sys.stderr)
+    out, any_cited = {}, False
+    for cid in a.ids:
+        if source == "empty":
+            out[cid] = []
+            continue
+        hits, reason = citation_grep(cid)
+        if reason is not None:
+            sys.exit(f"truth: cannot verify citations -- {reason}")
+        blocking = citation_block_paths(hits, globs)
+        out[cid] = blocking
+        any_cited = any_cited or bool(blocking)
+    if a.json:
+        print(json.dumps(out))
+    else:
+        for cid in a.ids:
+            print(f"{cid}: " + (", ".join(_escape_ctrl(p) for p in out[cid])
+                                if out[cid] else "clean"))
+    sys.exit(CITATIONS_EXIT_CITED if any_cited else 0)
 
 def cmd_verdict(a):
     claims, _ = fold(load_events())
@@ -2346,6 +2929,27 @@ def cmd_verdict(a):
             err = human_ack_error(a.claim_id, "claim retraction")
             if err:
                 sys.exit(err)
+            # ADR-036: after the ADR-011 ceremony, before the append --
+            # refuse while the id is cited inside the scope. The refusal
+            # deliberately does NOT name its override (ADR-011's surface
+            # rule: bypasses live in --help and the README, not in error
+            # paths agents hit).
+            blocking = citation_sweep(a.claim_id, a.orphan_ok)
+            if blocking and not a.orphan_ok:
+                # SI-3: git-emitted names render escaped (with -z they
+                # arrive raw, so a hostile filename could otherwise
+                # inject terminal escapes into this listing)
+                listing = "\n".join(f"  {_escape_ctrl(p)}" for p in blocking)
+                print(f"truth: retraction blocked -- {a.claim_id} is "
+                      f"cited by {len(blocking)} scope-covered file(s) "
+                      f"(ADR-036):\n{listing}\n  Swap each citation to "
+                      "the successor claim first, then retract.",
+                      file=sys.stderr)
+                sys.exit(CITATIONS_EXIT_CITED)
+        elif a.orphan_ok:
+            sys.exit("truth: --orphan-ok only accompanies a retraction "
+                     "(ADR-036: it excuses orphaned citations, which "
+                     "only the terminal verb creates)")
         if a.verdict == "agree" \
                 and claims[a.claim_id]["claim"].get("session") == session() \
                 and os.environ.get("TRUTH_SELF_VERDICT") != "1":
@@ -2358,6 +2962,10 @@ def cmd_verdict(a):
                      f"scripts/truth dispatch {a.claim_id}")
         verdict, basis = a.verdict, a.basis
     payload = {"claim": a.claim_id, "verdict": verdict, "basis": basis}
+    if verdict == "retracted" and a.orphan_ok:
+        # ADR-036: deliberate orphaning, stored and counted (CC-2).
+        # Decay: declined -- a tombstone is terminal, nothing re-asks.
+        payload["orphan_basis"] = a.orphan_ok
     if a.mechanical:
         payload["subtype"] = "mechanical"
     if verdict == "agree" and \
@@ -2695,6 +3303,18 @@ def cmd_done(a):
         err = human_ack_error(a.issue_id, "issue cancellation")
         if err:
             sys.exit(err)
+        # ADR-036: the issue tombstone runs the identical citation sweep.
+        blocking = citation_sweep(a.issue_id, a.orphan_ok)
+        if blocking and not a.orphan_ok:
+            listing = "\n".join(f"  {_escape_ctrl(p)}" for p in blocking)  # SI-3
+            print(f"truth: cancellation blocked -- {a.issue_id} is cited "
+                  f"by {len(blocking)} scope-covered file(s) (ADR-036):\n"
+                  f"{listing}\n  Swap each citation first, then cancel.",
+                  file=sys.stderr)
+            sys.exit(CITATIONS_EXIT_CITED)
+    elif getattr(a, "orphan_ok", None):
+        sys.exit("truth: --orphan-ok only accompanies --cancel "
+                 "(ADR-036: the issue tombstone)")
     if not a.basis:
         sys.exit(f"truth: '{event}' requires --basis (cite what you did, "
                  "never a vibe)")
@@ -2715,7 +3335,8 @@ def cmd_done(a):
                                             a.single_run, a.duplicate_ok,
                                             claims, a.scope_ok,
                                             a.evidence_unsafe_ok,
-                                            a.evidence_exit_ok)
+                                            a.evidence_exit_ok,
+                                            a.generated_ok)
     # ADR-014: the acceptance oracle gates a plain close -- it runs after
     # the cheap intake checks and before ANY append (both-or-neither
     # extends to the oracle). --cancel/--reopen skip it: killing or
@@ -2758,6 +3379,8 @@ def cmd_done(a):
     claim_rec = (append_record("claim", claim_payload)
                  if claim_payload else None)
     event_payload = {"issue": a.issue_id, "event": event, "basis": a.basis}
+    if event == "cancelled" and a.orphan_ok:
+        event_payload["orphan_basis"] = a.orphan_ok  # ADR-036, CC-2
     if accept_note:
         event_payload["accept"] = accept_note
     append_record("issue_event", event_payload)
@@ -2774,7 +3397,7 @@ def cmd_done(a):
         # hollow-VERIFIED warning, FS-1 note) -- one CC-1 block, stderr.
         block = render_advisory_block(intake_advisories(
             events, a.tier, a.ttl_days, a.scope_ok, a.evidence_class,
-            claim_payload))
+            claim_payload, generated_ok=a.generated_ok, claims=claims))
         if block:
             print(block, file=sys.stderr)
 
@@ -3020,8 +3643,10 @@ def cmd_stats(a):
     # ADR-033: the override-velocity section rides alongside stats. No
     # threshold, no gate -- a non-blocking advisory only.
     overrides = override_report(events, now_dt(), folded=folded)
+    blast = blast_report(events, folded=folded)
     if a.json:
         report["overrides"] = overrides
+        report["blast"] = blast
         print(json.dumps(report, indent=2))
         return
     print("claims by status: " + (", ".join(
@@ -3053,12 +3678,23 @@ def cmd_stats(a):
           f"decay-expiries={o['decay_expiries']} "
           f"dup-overrides={o['overridden_duplicates']} "
           f"unscreened={o['screened_false_filings']} "
-          f"exit-ok={o['evidence_exit_filings']}"
+          f"exit-ok={o['evidence_exit_filings']} "
+          f"orphan-ok={o['orphan_filings']} "
+          f"generated-ok={o['generated_ok_filings']}"
           + (f", max scope ttl {mx}d" if mx is not None else ""))
     # ADR-035: warned population beside the single-homed override count
     # (the refused class leaves no record, so it has no counter).
     print(f"hollow: warned={o['hollow_warned']} "
           f"(overridden -> overrides exit-ok)")
+    # ADR-039: the churn instrument (report, never a gate).
+    b = blast
+    print(f"blast: floor {b['effective_floor']} ({b['floor_source']})"
+          + ("; top observed-vs-forecast: " + ", ".join(
+              f"{r['claim']}={r['observed']}/{r['forecast']}"
+              for r in b["rows"]) if b["rows"] else "")
+          + ("; top stalers: " + ", ".join(
+              f"{s['path']}={s['invalidations']}"
+              for s in b["staler_ranking"]) if b["staler_ranking"] else ""))
     for r in o["repeats"]:
         print(f"  advisory: {r['claim']} re-files the scope justification of "
               f"{r['prior']} (now {r['prior_status']}) verbatim -- same scope "
@@ -3352,6 +3988,12 @@ def main():
                    help="file despite a failed evidence-command safety "
                         "screen (ADR-009); recheck will refuse to execute "
                         "the command, so verification becomes manual")
+    c.add_argument("--generated-ok", metavar="SENTENCE",
+                   help="watch a path on the committed generated-artifact "
+                        "list anyway (ADR-037): one sentence why the "
+                        "artifact itself is the fact; stored as "
+                        "generated_ok_basis, counted, and decays like "
+                        "--scope-ok (ADR-032 default expiry)")
     c.add_argument("--evidence-exit-ok", metavar="SENTENCE",
                    help="one sentence: why a FAILING evidence command "
                         "proves this positive sentence (ADR-035; stored "
@@ -3373,8 +4015,22 @@ def main():
     v.add_argument("--mechanical", action="store_true",
                    help="annotate a diverge: the measuring recipe changed, "
                         "not necessarily the fact (ADR-012)")
+    v.add_argument("--orphan-ok", metavar="SENTENCE",
+                   help="retract despite scope-covered citations of the id "
+                        "(ADR-036): one sentence why deliberate orphaning "
+                        "is right; stored as orphan_basis, counted in the "
+                        "override report")
     v.add_argument("--json", action="store_true")
     v.set_defaults(fn=cmd_verdict)
+
+    ci = sub.add_parser("citations", help="ADR-036 preflight: which "
+                        "scope-covered files cite these ledger ids "
+                        "(read-only, no ceremony; exit 0 = clean, "
+                        f"{CITATIONS_EXIT_CITED} = cited -- sweep before "
+                        "a batch retraction)")
+    ci.add_argument("ids", nargs="+")
+    ci.add_argument("--json", action="store_true")
+    ci.set_defaults(fn=cmd_citations)
 
     s = sub.add_parser("invalidate-scan",
                        help="mark claims stale: paths changed, TTL expired, or anchor lost")
@@ -3462,6 +4118,10 @@ def main():
                          "TRUTH_HUMAN_ACK=<id> for headless human use")
     dn.add_argument("--reopen", action="store_true",
                     help="reopen a closed item (work is cyclical)")
+    dn.add_argument("--orphan-ok", metavar="SENTENCE",
+                    help="cancel despite scope-covered citations of the "
+                         "wk- id (ADR-036); stored as orphan_basis on the "
+                         "event, counted in the override report")
     dn.add_argument("--claim", dest="claim_text",
                     help="text of the completion fact to file atomically")
     dn.add_argument("--class", dest="evidence_class", default="UNVERIFIED",
@@ -3477,6 +4137,8 @@ def main():
                     help="see `truth claim --scope-ok` (ADR-007)")
     dn.add_argument("--evidence-unsafe-ok", action="store_true",
                     help="see `truth claim --evidence-unsafe-ok` (ADR-009)")
+    dn.add_argument("--generated-ok", metavar="SENTENCE",
+                    help="see `truth claim --generated-ok` (ADR-037)")
     dn.add_argument("--evidence-exit-ok", metavar="SENTENCE",
                     help="see `truth claim --evidence-exit-ok` (ADR-035)")
     dn.add_argument("--accept-unsafe-ok", dest="accept_unsafe_ok",

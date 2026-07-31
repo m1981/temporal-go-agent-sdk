@@ -1829,6 +1829,23 @@ CORPUS = [
     ("verdict retracted ok", rec("verdict", {"claim": "tr-00000001",
                                              "verdict": "retracted",
                                              "basis": "b"}), True),
+    # ---- ADR-036 orphan_basis (v0.9.22). Cross-field (basis on a
+    # non-retracted verdict / non-cancelled event) is a deliberate
+    # schema-vs-mirror DISAGREEMENT, so it lives in canary TG, never
+    # in this shared corpus. ----
+    ("verdict retracted with orphan_basis",
+     rec("verdict", {"claim": "tr-00000001", "verdict": "retracted",
+                     "basis": "b",
+                     "orphan_basis": "citations are historical record"}),
+     True),
+    ("verdict empty orphan_basis",
+     rec("verdict", {"claim": "tr-00000001", "verdict": "retracted",
+                     "basis": "b", "orphan_basis": ""}), False),
+    ("issue_event cancelled with orphan_basis",
+     rec("issue_event", {"issue": "wk-00000001", "event": "cancelled",
+                         "basis": "b",
+                         "orphan_basis": "spec cites it as history"},
+         rid="tr-000000e6"), True),
     ("verdict bad value", rec("verdict", {"claim": "tr-00000001",
                                           "verdict": "maybe", "basis": "b"}), False),
     ("verdict bad claim ref", rec("verdict", {"claim": "nope",
@@ -1925,6 +1942,23 @@ CORPUS = [
      True),
     ("claim empty evidence_exit_basis",
      rec("claim", claim_p(evidence_exit_basis="")), False),
+    # ---- ADR-037 generated-ok basis (v0.9.23). The present-but-empty
+    # paths cross-field split is mirror-only (crafted-record checks),
+    # never in this shared corpus; del-paths mutants agree by design. ----
+    ("claim with generated_ok_basis and paths",
+     rec("claim", claim_p(evidence_paths=["gen/out.csv"],
+                          generated_ok_basis="the artifact is the fact")),
+     True),
+    ("claim empty generated_ok_basis",
+     rec("claim", claim_p(evidence_paths=["gen/out.csv"],
+                          generated_ok_basis="")), False),
+    # ---- ADR-039 blast forecast (v0.9.25) ----
+    ("claim with blast_forecast",
+     rec("claim", claim_p(evidence_paths=["f.txt"], blast_forecast=3)),
+     True),
+    ("claim negative blast_forecast",
+     rec("claim", claim_p(evidence_paths=["f.txt"], blast_forecast=-1)),
+     False),
     # MEDIUM-1: --duplicate-ok override trace
     ("claim with overridden_duplicates",
      rec("claim", claim_p(overridden_duplicates=["tr-00000001",
@@ -2309,10 +2343,12 @@ class TestCrossSurfaceVersions(unittest.TestCase):
     # $id to the shape and no test could see it. This pins the shape: any
     # edit to the schema (minus its own $id) breaks the fingerprint, forcing
     # a conscious "is this a shape change? then bump $id" review.
-    # v0.12: ADR-035 adds the evidence_exit_basis field (a shape change).
-    EXPECTED_SCHEMA_ID = "truth-ledger-record.v0.12"
+    # v0.12: ADR-035 evidence_exit_basis; v0.13: ADR-036 orphan_basis
+    # (verdict + issue_event); v0.14: ADR-037 generated_ok_basis;
+    # v0.15: ADR-039 blast_forecast.
+    EXPECTED_SCHEMA_ID = "truth-ledger-record.v0.15"
     PINNED_SHAPE_SHA256 = \
-        "86f3cb9a4ef3f31fe94ef7f13832fe9eb9f9078c8145701df4fd9f00e552d2b5"
+        "46da42cc8b2d1140024fb5ffe72bf7148140e36aa0568570197c763af97edb96"
 
     def _schema(self):
         import json as _json
@@ -2447,9 +2483,9 @@ class TestEvidenceExitWarning(unittest.TestCase):
             # never re-run) is in the capsule, the warning is print-only
             self.assertEqual(filed["payload"]["evidence"]["returncode"], 1)
             self.assertEqual(sorted(filed["payload"]),
-                             ["anchor_commit", "cost_tier", "evidence",
-                              "evidence_class", "evidence_paths", "text",
-                              "ttl_days"])
+                             ["anchor_commit", "blast_forecast",
+                              "cost_tier", "evidence", "evidence_class",
+                              "evidence_paths", "text", "ttl_days"])
 
     def test_cli_zero_exit_stays_silent(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2482,9 +2518,13 @@ class TestAdvisoryAssembler(unittest.TestCase):
     def test_gate_table_pre_execution_order_is_pinned(self):
         # Order is data (ADR-034); this pin is the unit half of GS1/GS2.
         names = [n for st, n, _ in tm.INTAKE_GATES if st == "pre-execution"]
+        # scope-decay sits AFTER the generated gate: it decays only a
+        # STORED override basis (the R3 review's dropped-flag catch).
         self.assertEqual(names, ["text-nonempty", "near-duplicate-g8",
                                  "quantifier-scope-adr007",
-                                 "scope-decay-adr032", "paths-inv-m",
+                                 "paths-inv-m", "generated-paths-adr037",
+                                 "scope-decay-adr032",
+                                 "blast-forecast-adr039",
                                  "class-precheck"])
 
     def test_stats_consumers_folded_parity(self):
@@ -2534,6 +2574,98 @@ class TestExitGate(unittest.TestCase):
         # copies, not a shared reference: widening one must not widen
         # the other (ADR-035)
         self.assertIsNot(tm.NEGATION_TOKENS, tm.QUANTIFIER_TOKENS)
+
+class TestRecipeLints(unittest.TestCase):
+    """ADR-037: pure lint decisions on the screen's own token stream."""
+
+    def test_grep_n_lints_but_sort_n_does_not(self):
+        self.assertTrue(any("-n" in m for m in
+                            tm.recipe_lints("grep -n data f.txt")))
+        self.assertEqual(tm.recipe_lints("grep data f.txt | sort -n"), [])
+
+    def test_version_and_date_shapes_warn(self):
+        self.assertTrue(any("v1.2.3" in m for m in
+                            tm.recipe_lints("grep v1.2.3 f.txt")))
+        self.assertTrue(any("2026-01-15" in m for m in
+                            tm.recipe_lints("grep 2026-01-15 f.txt")))
+
+    def test_carve_outs_stay_silent(self):
+        # path-context, schema-$id, frozen-record date
+        self.assertEqual(tm.recipe_lints("cat docs/v1.2.3/notes.md"), [])
+        self.assertEqual(
+            tm.recipe_lints("grep truth-ledger-record.v0.14 s.json"), [])
+        self.assertEqual(
+            tm.recipe_lints("grep 'Accepted (2026-07-20' adr.md"), [])
+
+    def test_quote_split_literal_still_warns(self):
+        # shlex concatenates adjacent quoted parts into ONE token -- a
+        # whitespace splitter would have been gameable here (F1/F5).
+        self.assertTrue(any("v9.8.7" in m for m in
+                            tm.recipe_lints("grep 'v9.8''.7' f.txt")))
+
+class TestDirtyWatch(unittest.TestCase):
+    """ADR-038: pure porcelain-z parsing and structural dirtiness."""
+
+    def test_parse_rename_two_fields(self):
+        out = "R  new.txt\x00old.txt\x00 M plain.txt\x00?? fresh.txt\x00"
+        self.assertEqual(tm.parse_porcelain_z(out),
+                         [("R ", ["new.txt", "old.txt"]),
+                          (" M", ["plain.txt"]),
+                          ("??", ["fresh.txt"])])
+
+    def test_structural_dirtiness_covers_uu_and_skips_clean(self):
+        entries = [("UU", ["conflict.txt"]), ("!!", ["ignored.txt"]),
+                   (" M", ["mod.txt"]), ("??", ["ns/x.txt"])]
+        self.assertEqual(
+            tm.dirty_watch(entries, ["conflict.txt", "mod.txt", "ns/**"]),
+            ["conflict.txt", "mod.txt", "ns/x.txt"])
+        self.assertEqual(tm.dirty_watch(entries, ["ignored.txt"]), [])
+
+    def test_rename_matches_either_side(self):
+        entries = [("R ", ["new.txt", "old.txt"])]
+        self.assertEqual(tm.dirty_watch(entries, ["old.txt"]), ["old.txt"])
+        self.assertEqual(tm.dirty_watch(entries, ["new.txt"]), ["new.txt"])
+
+class TestBlastForecast(unittest.TestCase):
+    """ADR-039: pure forecast, log parsing, and the self-calibrating
+    floor."""
+
+    def test_parse_name_log_chunks(self):
+        out = "\x01aaa\nf1.txt\nf2.txt\n\x01bbb\nf1.txt\n"
+        self.assertEqual(tm.parse_name_log(out),
+                         [("aaa", frozenset({"f1.txt", "f2.txt"})),
+                          ("bbb", frozenset({"f1.txt"}))])
+
+    def test_forecast_counts_distinct_commits_by_union(self):
+        hist = [("a", frozenset({"src/x.py", "docs/d.md"})),
+                ("b", frozenset({"src/y.py"})),
+                ("c", frozenset({"other.txt"}))]
+        # one commit touching two watched files counts ONCE (union)
+        self.assertEqual(tm.blast_forecast(["src/**", "docs/d.md"], hist), 2)
+        self.assertEqual(tm.blast_forecast(["other.txt"], hist), 1)
+        self.assertEqual(tm.blast_forecast(["nothing/**"], hist), 0)
+        self.assertEqual(tm.blast_forecast([], hist), 0)
+
+    def test_floor_falls_back_then_calibrates(self):
+        def claim_with(bf, status="live"):
+            return {"status": status,
+                    "claim": {"payload": {"evidence_paths": ["f"],
+                                          "blast_forecast": bf}}}
+        few = {f"tr-{i:08x}": claim_with(i) for i in range(5)}
+        self.assertEqual(tm.effective_blast_floor(few),
+                         (tm.BLAST_ADVISORY_FLOOR, "fallback"))
+        many = {f"tr-{i:08x}": claim_with(i) for i in range(30)}
+        floor, src = tm.effective_blast_floor(many)
+        self.assertEqual(src, "calibrated")
+        self.assertEqual(floor, 26)  # P90 of 0..29
+        # stale claims are excluded from calibration
+        stale = {f"tr-{i:08x}": claim_with(i, "stale") for i in range(30)}
+        self.assertEqual(tm.effective_blast_floor(stale),
+                         (tm.BLAST_ADVISORY_FLOOR, "fallback"))
+        # an all-cold corpus clamps to 1 -- never a floor of 0 that
+        # flags stone-cold watches as hot (R5 review, F2)
+        cold = {f"tr-{i:08x}": claim_with(0) for i in range(30)}
+        self.assertEqual(tm.effective_blast_floor(cold), (1, "calibrated"))
 
 class TestCommitGateBanner(unittest.TestCase):
     """R2: loud fail-open -- an unwired ADR-025 commit gate is announced

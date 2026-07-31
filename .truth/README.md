@@ -1,4 +1,4 @@
-# .truth — append-only claims ledger (v0.9.21)
+# .truth — append-only claims ledger (v0.9.25)
 
 > Reader: any agent or human about to assert, trust, or re-verify a fact about this repository | Enables: filing a claim in one command, and knowing which claims are still live before acting on them | Update-trigger: the record schema, invariants, or CLI contract change
 
@@ -474,6 +474,66 @@ by design) files with `--evidence-exit-ok "<sentence>"` — stored as
 in the override report; the basis is refused beside an exit of 0
 (nothing to excuse), at intake and by `validate`. Canary FAULT X
 (8 arms) gates the behavior.
+
+**The tombstone citation gate** (ADR-036, v0.9.22): `verdict <id>
+retracted` and `done --cancel` -- after the ADR-011 human ceremony,
+before the append -- grep the exact id bare at the repo root and
+**refuse with exit 6** while a scope-covered file cites it (swap each
+citation to the successor first). Scope is consumer policy
+(`.truth/citation-scope`, one glob per line, CLI glob grammar -- never
+git pathspecs; lines starting `:`/`-`/`!` are refused): absent means
+the built-in default `docs/specs/**` with a notice, committed-empty
+consciously disables, a non-empty file matching zero tracked files
+gets a loud dead-scope notice. `.truth/claims.jsonl` never blocks
+(retraction bases legitimately cite predecessors). Deliberate
+orphaning: `--orphan-ok "<sentence>"`, stored as `orphan_basis`
+(schema v0.13), counted in the override report. `truth citations
+<id>...` is the read-only, ceremony-free preflight (exit 0 clean / 6
+cited) -- a batch sweep runs one preflight, then per-id ceremonial
+verdicts; a multi-id ack stays refused on principle (ADR-011: one
+typed id authorizes one tombstone). git-grep unavailable fails CLOSED
+(the one earned exception -- the verb is terminal). Canary FAULT TG
+(11 arms).
+
+**Recipe lints + generated-paths** (ADR-037, v0.9.23): filing a
+VERIFIED claim lints the recipe on the screen's own token stream (one
+parser) -- `grep -n` (line numbers shift under unrelated edits),
+version-shaped and date-shaped literals (release/calendar expiries)
+warn in the advisory block, with three carve-outs: path-context
+tokens, the schema `$id` shape, and frozen-record dates. Warnings
+never refuse. A watch matching the consumer-owned
+`.truth/generated-paths` list IS refused (every evidence class -- a
+generated file restales on each regeneration; watch the source);
+`--generated-ok "<sentence>"` stores `generated_ok_basis` (schema
+v0.14), is counted, and decays like `--scope-ok` (ADR-032) so the
+judgment is re-asked. The template ships the list EMPTY (= conscious
+"nothing is generated", silent); deleting it leaves the check dark
+with one advisory line saying so. Canary FAULT RC (10 arms).
+
+**The dirty-watch advisory** (ADR-038, v0.9.24): filing a claim whose
+watched path is dirty in the working tree -- modified or staged, an
+untracked file under a glob watch, an uncommitted rename (either
+side), or a merge-conflict state (UU et al.) -- voices one
+`dirty watch: <path> ...` line in the advisory block: the claim would
+stale on the very commit that lands its content (restale-at-birth;
+commit first, then file). Advisory only, never a refusal (a gate here
+would teach `git stash` as its bypass), machine-visible via --json
+advisories. Canary FAULT DW (7 arms).
+
+**The blast forecast** (ADR-039, v0.9.25): filing a path claim stamps
+`blast_forecast` -- the count of distinct commits touching the watch
+in the trailing 30 days, an UPPER BOUND on stalings (a claim stales
+only from live) -- and voices one advisory line at or above the
+floor. The floor SELF-CALIBRATES: P90 of stored forecasts over live
+path-claims once 20 exist, else the constant 15 (cold start). Shallow
+clones and unborn HEADs degrade LOUDLY (a notice, never a
+quietly-cold number); nothing is stored for them. `truth stats` gains
+the `blast` churn section: observed-vs-forecast per claim, the
+per-path staler ranking (read from invalidation `touched` lists), and
+the effective floor. A refusal gate deliberately does NOT ship -- it
+returns only as its own ADR once a field window of forecast-vs-
+observed data and the reaffirm-trial read exist. Canary FAULT BF
+(7 arms).
 
 ## Daily operation
 
